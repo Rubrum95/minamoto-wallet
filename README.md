@@ -51,8 +51,8 @@ Download the latest `.dmg` from the **[Releases page](../../releases)**:
 ### Build + sign + bundle
 
 ```bash
-# Compile the binary
-cargo build --release
+# Compile the binary with host-path stripping (reproducible binary)
+dist/build-release.sh
 
 # Adhoc-codesign (no Apple Developer ID required)
 codesign --force --sign - target/release/minamoto-wallet
@@ -65,6 +65,11 @@ dist/make-dmg.sh
 ```
 
 The result lands in `dist/Minamoto-Wallet-0.1.0.dmg`.
+
+`dist/build-release.sh` substitutes `$HOME` and the project / Iroha
+source paths into rustc's `--remap-path-prefix` flags, so the
+resulting binary's `strings(1)` output contains no host-identifying
+paths and the SHA-256 is reproducible across machines.
 
 ### Path dependencies
 
