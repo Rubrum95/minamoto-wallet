@@ -67,18 +67,17 @@ touch.
 - BIP39 mnemonic is the only off-machine secret (paper backup).
 - Single-user Mac assumption documented in `WALLET_DESIGN.md`.
 
-**Resolution (2026-05-01)**: this entire concern is structurally
-eliminated by the Phase-1 keystore migration. New wallets (and
-existing v1 wallets after `migrate-v2`) encrypt the seed with a
-user-chosen password via argon2id (m=64MB, t=3) + AES-256-GCM. The
-encrypted blob lives in the wallet JSON file; the Keychain plays no
-role in custody anymore. Local malware reading the JSON gets nothing
-without the password (offline brute-force ≈1s/guess on M1, so a
-strong passphrase is impractical to crack). See `src/password.rs` and
-`STATUS.md` for the full design. Both `mi-wallet` and `prova 2` were
-migrated; the dead-code `make_access_control()` path is kept only for
-the audit experiment (`bio-test`) that confirmed the entitlement
-gating empirically.
+**Resolution**: structurally eliminated by the Phase-1 keystore
+migration. New wallets (and existing v1 wallets after `migrate-v2`)
+encrypt the seed with a user-chosen password via argon2id (m=64MB,
+t=3) + AES-256-GCM. The encrypted blob lives in the wallet JSON
+file; the Keychain plays no role in custody for v2 records. Local
+malware reading the JSON gets nothing without the password (offline
+brute-force ≈1s/guess on M1, making a strong passphrase impractical
+to crack). See `src/password.rs` and `STATUS.md` for the design. The
+dead-code `make_access_control()` path is retained only for the
+`bio-test` subcommand that confirmed the entitlement gating
+empirically.
 
 ---
 
@@ -95,11 +94,11 @@ loopback server.
 Without `Host` header validation our server processes those requests
 as legitimate.
 
-**Exploit (pre-fix)**: a tab the user has open in any browser visits
-a malicious page that periodically POSTs to its rebound `127.0.0.1`,
-hitting `/api/wallet/<label>/send` etc. Touch ID still gates real
-signing, but `/api/wallet/<label>` `DELETE` (see H2) and
-`/api/quit` had no such gate.
+**Exploit (pre-fix)**: any open browser tab visits a malicious page
+that periodically POSTs to its rebound `127.0.0.1`, hitting
+`/api/wallet/<label>/send` etc. Touch ID still gated real signing,
+but `/api/wallet/<label>` DELETE (see H2) and `/api/quit` had no
+such gate.
 
 **Fix (this turn)**: server checks the `Host` header is exactly
 `127.0.0.1:7825` or `localhost:7825`; everything else returns 421
@@ -111,8 +110,8 @@ signing, but `/api/wallet/<label>` `DELETE` (see H2) and
 The HTML UI's JS prompts `confirm()` before issuing DELETE, but the
 backend itself didn't gate the operation. A successful DNS rebind
 (see H1) or any local process calling `curl -X DELETE
-http://127.0.0.1:7825/api/wallet/mi-wallet` would silently delete
-the SE wrap and the on-disk record.
+http://127.0.0.1:7825/api/wallet/<label>` would silently delete the
+SE wrap and the on-disk record.
 
 **Damage**: catastrophic — without the BIP39 mnemonic, the wallet is
 unrecoverable.

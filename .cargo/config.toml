@@ -1,0 +1,24 @@
+# Strip absolute build-host paths from the release binary.
+#
+# Without this, every `panic!` location and every `Err::source()`
+# attribution embeds the literal `/Users/<your-name>/.cargo/registry/...`
+# path in `.rodata`, leaking the build host's home directory to anyone
+# with `strings(1)`. `--remap-path-prefix` rewrites them at compile
+# time so the binary contains no host-identifying paths.
+#
+# Three remaps are applied (longest-first matching wins; cargo
+# preserves order):
+#   1. The cargo registry under $HOME/.cargo  →  /cargo
+#   2. The local Iroha 3 source clone        →  /iroha-source
+#   3. The project root itself                →  /minamoto-wallet
+#
+# Effect: every embedded source path becomes either
+# `/cargo/registry/...`, `/iroha-source/crates/...`, or
+# `/minamoto-wallet/src/...` — fully reproducible across machines.
+
+[build]
+rustflags = [
+    "--remap-path-prefix=/Users/joantoni/.cargo=/cargo",
+    "--remap-path-prefix=/Users/joantoni/Desktop/Feina/sora/iroha-source=/iroha-source",
+    "--remap-path-prefix=/Users/joantoni/Desktop/Feina/sora/minamoto-wallet=/minamoto-wallet",
+]

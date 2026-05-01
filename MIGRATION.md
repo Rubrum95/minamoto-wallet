@@ -1,91 +1,60 @@
-# minamoto-wallet — Migration plan to YubiKey 5C
+# minamoto-wallet — keystore migration
 
-## Current architecture (v0.1, Secure Enclave wrap)
+## Versions in scope
 
-The Ed25519 private key (32-byte seed) is **wrapped** by an ECDH operation
-against a P-256 keypair generated inside the Apple Secure Enclave. The
-P-256 private key **never leaves the SE chip**; it lives in the system
-keychain managed by macOS and is gated by `[.biometryAny .or .devicePasscode]`
-access control. Each unwrap requires Touch ID.
+- **v1 (legacy)** — Ed25519 seed wrapped via ECIES against a software
+  P-256 key in `login.keychain`. No biometric ACL on the keychain
+  item itself; Touch ID was a user-space LAContext check enforced
+  in-binary, not in `securityd`. Local processes running as the same
+  user could decrypt the seed via `SecKeyCreateDecryptedData` without
+  triggering Touch ID.
+- **v2 (current)** — Ed25519 seed encrypted with a key derived from a
+  user-chosen password via argon2id (m=64MB, t=3, p=1) and sealed
+  with AES-256-GCM. Reading the wallet JSON file alone is useless;
+  the password is required to decrypt the seed. The Keychain plays
+  no custody role for v2 records.
 
-The wrapped (ciphertext) seed is stored in:
+## Migrating v1 → v2
 
 ```
-~/Library/Application Support/minamoto-wallet/<label>.json
+minamoto-wallet migrate-v2 <label>
 ```
 
-This file contains the ECIES ciphertext. It is useless without the
-Secure Enclave key it was wrapped to, and that key cannot be exfiltrated
-from the SE.
+Steps the command performs:
 
-### What this protects against
+1. Verify the record on disk is v1; otherwise no-op.
+2. Touch ID prompt to unwrap the v1 seed via the legacy SE path.
+3. Read a new password from stdin (twice, with confirmation).
+4. Derive the KEK (~1s on Apple Silicon) and encrypt the seed.
+5. Persist a v2 record with the same label, public key, I105,
+   `notes`, and `registered_on_chain` flag.
+6. Delete the SE keychain item.
 
-| Threat | Defense |
-|---|---|
-| Disk theft / Time Machine backup leak | Ciphertext only on disk; SE key never on disk |
-| Keychain dump with root | SE-protected key cannot be extracted, even with root |
-| Malware running as user | Touch ID required; user sees prompt and can decline |
-| iCloud sync of secrets | ciphertext file is in `~/Library/Application Support/`, not iCloud Drive; SE key is `ThisDeviceOnly` |
+The BIP39 mnemonic does not change: it is the entropy of the seed,
+which is preserved across the re-encryption.
 
-### What it does NOT protect against
+## Future direction: hardware key (YubiKey 5C)
 
-| Threat | Why we lose | Mitigation |
-|---|---|---|
-| **Cold boot / RAM dump while signing** | Iroha 3 requires Ed25519 signatures. macOS Secure Enclave does not support Ed25519 (only P-256). Therefore the unwrapped Ed25519 seed must briefly be in CPU RAM during the sign operation. We zeroize immediately, but the window exists. | Migrate to YubiKey (Phase 2 below) |
-| **Malware with root + LLDB attached to wallet process** | Same root cause: any debugger can read RAM during the brief signing window. | Migrate to YubiKey |
-| **OS-level keylogger capturing Touch ID prompt context** | Touch ID itself cannot be intercepted, but the prompt-text and the fact that an unlock happened can be observed. | Hardware keys with on-device button enforce a separate non-spoofable signal |
+A future keystore would store the Ed25519 signing key on an external
+hardware token (YubiKey 5C series, Ledger Nano, etc.) and remove the
+on-disk encrypted seed entirely. Properties:
 
-## Phase 2 — YubiKey 5C NFC (planned)
+- Signing happens on the device; the seed never enters host RAM.
+- Host-machine compromise does not compromise the key.
+- Hardware-key compromise requires physical possession + device PIN.
 
-When the wallet starts holding non-trivial XOR amounts, migrate signing to
-**YubiKey 5C NFC** with PIV applet (Ed25519 supported since firmware 5.7,
-released May 2024). At that point:
+Implementation notes:
 
-1. Generate a fresh Ed25519 keypair **inside the YubiKey** (`yubico-piv-tool`
-   or PIV-applet directly via `yubikey-rs` crate).
-2. The private key never leaves the device. Signing happens onboard:
-   the wallet sends a 32-byte hash to the YubiKey, gets back 64 bytes of
-   Ed25519 signature.
-3. PIN-protected (4-8 digits) + tap-to-sign physical button. No biometric
-   on this model — capacitive-touch presence detection only, which is
-   actually preferable for wallet use (no false positives, immune to
-   sleeping-finger coercion).
+- `iroha_crypto::PrivateKey` accepts a 32-byte Ed25519 seed. The
+  YubiKey emits raw Ed25519 signatures over the transaction hash
+  prepared by `TransactionBuilder::sign`. A wrapper that intercepts
+  the sign call and routes to the YubiKey is sufficient — the rest
+  of the Iroha 3 wire format remains untouched.
+- Likely transports: PIV applet (PKCS#11) for a generic flow, or
+  the FIDO2 applet for native Ed25519 (requires firmware ≥ 5.7 on
+  YubiKey 5C series).
+- A v3 keystore record would replace `password_encrypted` with a
+  `hardware_key` block: `{kind, slot, pubkey, attestation_b64}`.
+  No ciphertext to encrypt — the secret never leaves the device.
 
-### Migration path
-
-Because Iroha 3 accounts are derived from the public key, **the YubiKey
-account will have a different I105 address than the SE-wrap account.**
-We cannot move the key material from one to the other. The migration is:
-
-1. On YubiKey: `yubico-piv-tool -a generate -s 9c -A ED25519` (slot 9c =
-   Digital Signature). Save the new public key.
-2. Compute new I105 address with `network_prefix=753`.
-3. Use the SE-wrap wallet to send all XOR to the new YubiKey-backed wallet.
-4. Delete the SE-wrap wallet (`minamoto-wallet delete <label>` — also
-   removes the SE key from the system keychain).
-
-### Implementation notes for Phase 2
-
-- Replace `secure_enclave.rs` with a `yubikey.rs` module using the
-  `yubikey-rs` crate (or `pcsc-rs` + raw PIV APDUs).
-- Touch ID prompts disappear; replaced with PIN entry + LED-blinks-and-tap.
-- The I105 derivation, transfer-construction, and Torii submission code
-  paths in `wallet.rs` / `transfer.rs` / `torii.rs` remain unchanged —
-  they only see "give me a 64-byte Ed25519 signature for this hash",
-  whether the implementation behind it is SE-wrap or YubiKey.
-
-### Estimated effort
-
-~1 day to swap the signing module + verify on testnet (Taira) before
-re-running end-to-end.
-
-## Why we did not start with YubiKey
-
-1. Hardware purchase delay (~2-3 days from Amazon).
-2. SE-wrap is sufficient for first end-to-end validation with 1 XOR.
-3. Implementing both modules forces us to design the right abstraction
-   boundary (the "give me a signature for this hash" interface) which we
-   would otherwise hand-wave.
-
-When the Phase 2 migration happens, this file gets archived with a final
-section documenting the actual amounts moved.
+Not yet started.

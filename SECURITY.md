@@ -2,57 +2,52 @@
 
 ## Reporting a vulnerability
 
-**If you find a vulnerability, do NOT open a public Issue.**
+Do **not** open a public Issue for vulnerabilities.
 
-Use one of:
+Use GitHub's private security advisories:
+<https://github.com/Rubrum95/minamoto-wallet/security/advisories/new>.
+This route is end-to-end encrypted between reporter and maintainer,
+and lets a fix + disclosure timeline be coordinated before public
+disclosure.
 
-1. **GitHub Private Security Advisory** — preferred:
-   <https://github.com/Rubrum95/minamoto-wallet/security/advisories/new>.
-   This route is end-to-end encrypted and lets us coordinate a fix +
-   disclosure timeline before anything hits the public.
-
-2. **Email**: jtvr90 [at] gmail.com — subject line starts with
-   `[minamoto-wallet security]`. Plain English is fine; if you want
-   PGP, request the key in a first round-trip.
-
-We aim to acknowledge within 72 hours and ship a patch within 14 days
-for issues that affect custody (seed extraction, signing-without-auth,
-etc.). Lower-severity issues get a best-effort timeline.
+Acknowledgement target: 72 hours. Fix target for custody-affecting
+issues (seed extraction, signing without auth, etc.): 14 days.
+Lower-severity issues: best-effort.
 
 ## Scope
 
 In scope:
 
-- The `minamoto-wallet` binary: signing flow, password handling, seed
-  encryption / decryption, IPC between the embedded WKWebView and the
-  loopback HTTP server, build / packaging scripts.
-- The `dist/make-app.sh` and `dist/make-dmg.sh` packaging scripts.
+- The `minamoto-wallet` binary: signing flow, password handling,
+  seed encryption / decryption, IPC between the embedded WKWebView
+  and the loopback HTTP server, build / packaging scripts.
+- `dist/make-app.sh` and `dist/make-dmg.sh`.
 - Documentation that materially misleads about the security model
-  (e.g. wrong threat-model claims in README / AUDIT.md).
+  (e.g. wrong threat-model claims in `README.md` / `AUDIT.md`).
 
-Out of scope (not "won't fix" — "we cannot fix"):
+Out of scope:
 
 - Vulnerabilities in upstream Iroha 3 (`iroha_crypto`,
-  `iroha_data_model`, etc.) — please report those to
+  `iroha_data_model`, etc.) — report to
   <https://github.com/hyperledger-iroha/iroha>.
-- Vulnerabilities in third-party crates we depend on (argon2, aes-gcm,
-  reqwest, tao, wry, etc.) — report upstream.
+- Third-party crate vulnerabilities (argon2, aes-gcm, reqwest, tao,
+  wry, etc.) — report upstream.
 - macOS / Apple platform bugs.
-- Lost mnemonics. By design we cannot recover them; the user is the
-  only person who ever sees the seed phrase.
+- Lost mnemonics — by design unrecoverable.
 - Phishing / social-engineering / fake "Minamoto Wallet" downloads
-  hosted elsewhere — only the official Releases page on this repo is
-  ours.
+  hosted elsewhere — only the official Releases page on this repo
+  is authoritative.
 
-## What you can audit yourself, today
+## Self-verification path
 
-The repo is fully open and the build is reproducible from source. The
-realistic verification path:
+The repo is fully open and the build is reproducible from source.
 
-1. **Read the source** — 13 Rust files (~3500 lines) + one HTML/JS UI.
-   Start with `src/main.rs`, then `src/wallet.rs` and `src/password.rs`
-   for the crypto path. `src/ui.rs` covers the local API surface.
-2. **Build from source** and compare with the `.dmg` we publish:
+1. **Read the source** — 13 Rust files (~3500 lines) plus one
+   HTML/JS UI. Entry points: `src/main.rs`, then `src/wallet.rs` +
+   `src/password.rs` for the crypto path, `src/ui.rs` for the local
+   API surface.
+
+2. **Build from source and compare against the published `.dmg`**:
 
    ```bash
    git clone https://github.com/Rubrum95/minamoto-wallet
@@ -61,11 +56,11 @@ realistic verification path:
    shasum -a 256 target/release/minamoto-wallet
    ```
 
-   Compare against the `sha256sum` of the binary inside the published
-   `.dmg` (the Release notes list both). They will match for the
-   binary; the `.dmg` envelope itself includes timestamp metadata
-   that may produce different overall hashes per build (see Apple's
-   `hdiutil` documentation).
+   The Release notes list both the binary SHA-256 and the `.dmg`
+   SHA-256. The binary hash will match across machines because
+   `.cargo/config.toml` strips host paths via `--remap-path-prefix`.
+   The `.dmg` envelope itself contains timestamp metadata and may
+   produce different overall hashes per build.
 
 3. **Run the unit tests**:
 
@@ -73,32 +68,32 @@ realistic verification path:
    cargo test --release
    ```
 
-   The current suite covers `password` round-trip + wrong-password
-   rejection, and `confidential_address` round-trip + the public
-   `@sora_xor` v3 sample. Coverage is incomplete; PRs adding more
+   Current suite covers `password` (round-trip + wrong-password
+   rejection + fresh-salt invariant + empty-password rejection) and
+   `confidential_address` (round-trip + parse against the public
+   `@sora_xor` v3 sample). Coverage is incomplete; PRs that add
    tests welcome.
 
-## What "code review" doesn't fix
+## Limits of "code is open"
 
-Honest framing: opening the source eliminates one class of risk
-("what if the binary does something the README doesn't say") but
-introduces no audit-by-default. Anyone can read it; not many will.
-For genuine third-party assurance, the wallet would need:
+Public source eliminates the "what if the binary does something the
+README doesn't say" risk class. It does not produce an audit by
+itself: anyone can read the code, but few will. For genuine
+third-party assurance, the wallet would need:
 
-- A **paid, scoped audit** by a firm like Trail of Bits, Cure53, or
-  Sigma Prime. Estimate: $30-80k for a wallet of this size.
-- A **Bug Bounty program** (Immunefi or similar) with a published
-  payout table. Pre-funded; not free.
+- A **paid scoped audit** by a firm such as Trail of Bits, Cure53,
+  or Sigma Prime. Estimate: $30-80k for a wallet of this size.
+- A **bug bounty program** (Immunefi or similar) with a published
+  payout table.
 
-Until either of those exists, treat this software as **Phase 1,
-single-maintainer, use-at-your-own-risk**. Test with small amounts.
-The 24-word mnemonic on paper is your only disaster-recovery path.
+Until either exists, treat this software as **Phase 1,
+single-maintainer, use-at-your-own-risk**. Test with small amounts
+first. The 24-word BIP39 mnemonic on paper is the only
+disaster-recovery path.
 
 ## Past audits
 
-- **2026-05-01 — internal adversarial review** (the maintainer):
-  see [`AUDIT.md`](./AUDIT.md). Classifies findings CRITICAL → LOW
-  with reproduction steps and mitigation status. Most useful sections:
-  C1 (why we use password-encrypted keystore instead of native
-  Keychain biometric ACL), H1 (DNS-rebinding defense), H2 (delete
-  Touch-ID gate), and the long list of "Verifications that PASSED".
+- **Internal adversarial review** (the maintainer): see
+  [`AUDIT.md`](./AUDIT.md). Findings classified CRITICAL → LOW with
+  reproduction steps and mitigation status. Resolved findings are
+  marked accordingly; outstanding items list scope and rationale.

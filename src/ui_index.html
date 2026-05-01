@@ -521,7 +521,7 @@ function promptPassword({ title = 'Unlock wallet', subtitle = '', confirm = fals
 // We surface this honestly: an estimate in the confirm modal, then
 // the real fee derived from balance delta after Committed.
 
-const REGISTER_FEE_XOR = '0.021'; // observed empirically, mi-wallet block 37
+const REGISTER_FEE_XOR = '0.021'; // observed empirically on Minamoto
 
 /// Numeric estimate (in XOR) for the network fee of the next signing
 /// op. Empirical model from observed Minamoto txs (May 2026):

@@ -78,8 +78,8 @@ git clone -b i23-features https://github.com/hyperledger-iroha/iroha \
     ../iroha-source/iroha
 ```
 
-The `Cargo.toml` references `../iroha-source/iroha/crates/<name>`. We
-will switch to git deps in a future release for self-contained builds.
+The `Cargo.toml` references `../iroha-source/iroha/crates/<name>`.
+A future release will switch to git deps for self-contained builds.
 
 ## Architecture
 
@@ -131,8 +131,7 @@ docs at root:
 
 - **Seed at rest** — encrypted with a key derived from the user
   password via argon2id (m=64MB, t=3, p=1) and sealed with
-  AES-256-GCM. Reading the wallet JSON file gives you nothing without
-  the password.
+  AES-256-GCM. The wallet JSON file is unusable without the password.
 - **Seed in memory** — wrapped in `Zeroizing` from unlock through
   signing; explicit `ZeroizeOnDrop` on `iroha_crypto::PrivateKey`.
 - **HTTP server** — bound to `127.0.0.1:7825`, with `Host`-header
@@ -148,13 +147,12 @@ For the full threat model, see [`AUDIT.md`](./AUDIT.md).
 
 ## Contributing
 
-This is a personal project today (single maintainer, no SLA). PRs and
-issues welcome but there's no roadmap commitment. The most useful
-contributions:
+Single-maintainer project, no SLA. PRs and issues welcome but no
+roadmap commitment. High-impact areas:
 
 - Phase 2 ZK integration (Halo2-IPA prover wrapper).
-- Cross-platform builds (Linux / Windows once the password-encrypted
-  format becomes the only path).
+- Cross-platform builds (Linux / Windows) once the password-encrypted
+  flow becomes the only path.
 - Notarization workflow (requires Apple Developer ID).
 
 ## License
@@ -164,14 +162,13 @@ contributions:
 ## Acknowledgments
 
 - **Soramitsu** for the Iroha 3 protocol and the Sora ecosystem.
-- The `tao` + `wry` projects (the lower-level web-view stack from the
+- The `tao` + `wry` projects (lower-level web-view stack from the
   Tauri team).
-- The `argon2`, `aes-gcm`, `pasta_curves`, and `blake3` crates that
-  do the heavy crypto.
+- The `argon2`, `aes-gcm`, `pasta_curves`, and `blake3` crates.
 
 ---
 
-> ⚠ **Phase 0/1 wallet, not a financial product.** This software is
-> provided as-is, without warranty. The author is not responsible for
-> lost funds. The 24-word BIP39 mnemonic written on paper is your
-> only disaster-recovery path. Test with small amounts first.
+> ⚠ **Phase 1 wallet, not a financial product.** Provided as-is,
+> without warranty. The maintainers are not liable for lost funds.
+> The 24-word BIP39 mnemonic written on paper is the only
+> disaster-recovery path. Test with small amounts first.
