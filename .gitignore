@@ -1,0 +1,26 @@
+# Cargo build artifacts
+/target/
+
+# Generated app bundle and DMG. The DMG ships via GitHub Releases,
+# not as a tracked file — git is bad at large binary deltas and
+# clones inflate quickly.
+/dist/Minamoto Wallet.app/
+/dist/Minamoto-Wallet-*.dmg
+
+# Original logo upload (we keep the normalized PNG; the JPG was
+# just whatever the user dragged in).
+/dist/logo.jpg
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Rust analyzer / VSCode caches
+.rust-analyzer/
+.vscode/
+*.swp
+.idea/
+
+# Local environment state
+.env
+*.log

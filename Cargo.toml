@@ -1,0 +1,141 @@
+[package]
+name = "minamoto-wallet"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Touch-ID-protected Ed25519 wallet for Iroha 3 / Minamoto"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "minamoto-wallet"
+path = "src/main.rs"
+
+# ---------------------------------------------------------------------------
+# Path deps to local Iroha 3 source (i23-features branch).
+# Cargo resolves these crates' `workspace = true` references against their own
+# workspace root (`../iroha-source/iroha/Cargo.toml`), independent of ours.
+# ---------------------------------------------------------------------------
+[dependencies.iroha_crypto]
+path = "../iroha-source/iroha/crates/iroha_crypto"
+default-features = false
+features = ["std", "rand"]
+
+[dependencies.iroha_data_model]
+path = "../iroha-source/iroha/crates/iroha_data_model"
+default-features = false
+features = ["json"]
+
+[dependencies.iroha_torii_shared]
+path = "../iroha-source/iroha/crates/iroha_torii_shared"
+
+[dependencies.iroha_primitives]
+path = "../iroha-source/iroha/crates/iroha_primitives"
+default-features = false
+features = ["json"]
+
+[dependencies.norito]
+path = "../iroha-source/iroha/crates/norito"
+features = ["json"]
+
+# ---------------------------------------------------------------------------
+# crates.io deps
+# ---------------------------------------------------------------------------
+[dependencies]
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Crypto / encoding
+zeroize = { version = "1", features = ["zeroize_derive"] }
+hex = "0.4"
+rand = "0.8"
+bip39 = "2"
+
+# Password-encrypted wallet (Phase-1 keystore format).
+# - argon2 for memory-hard KDF (we run argon2id, ~1s on M1)
+# - aes-gcm for authenticated encryption of the seed
+# - rpassword to read the user password from stdin without echoing
+argon2 = { version = "0.5", default-features = false, features = ["std", "alloc", "password-hash"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes"] }
+rpassword = "7"
+
+# HTTP client (blocking — single-threaded CLI, no async needed)
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+
+# JSON for Torii REST responses
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time
+chrono = "0.4"
+
+# Base64 for ciphertext encoding inside wallet JSON files
+base64 = "0.22"
+
+# URL encoding of I105 addresses with non-ASCII katakana characters
+urlencoding = "2"
+
+# Embedded HTTP server for the local web UI. tiny_http is sync,
+# single-thread-safe, and pulls no async runtime — appropriate for a
+# localhost-only wallet UI that we don't want to expose to the network.
+tiny_http = "0.12"
+
+# Native macOS window + WKWebView. `tao` runs the AppKit event loop,
+# `wry` embeds a WKWebView pointing at the same loopback HTTP server.
+# This avoids spawning a full Tauri app (we don't need its IPC bridge,
+# updater, or asset packing — our HTML is already self-contained and
+# our API is the existing tiny_http endpoints).
+tao = "0.35"
+wry = "0.55"
+# Native menu bar — without this, macOS shortcuts (Cmd+C/V/X/A/Z/Y)
+# don't route to the focused element in WKWebView, so users can't
+# paste addresses into input fields.
+muda = "0.16"
+
+# ZK confidential note primitives. We use the SAME crates that
+# `iroha_core::zk::confidential_v2` uses so that our note-commitment
+# derivation is bit-identical to what the chain's circuit verifies.
+# - `halo2_proofs::halo2curves::pasta::Fp` is re-exported from pasta_curves;
+#   `Fp` is the Pallas scalar field (BN-pairing-free, 256-bit prime).
+# - blake3 is used by hash_to_scalar with a counter loop until a canonical
+#   Fp representation is found.
+pasta_curves = "0.5"
+# `ff` trait is needed to call PrimeField methods (from_repr, to_repr, ONE) on Fp.
+# pasta_curves does not re-export ff so we depend on it directly. Pinned to
+# 0.13 to match what pasta_curves 0.5 requires.
+ff = "0.13"
+blake3 = "1"
+
+# Iroha versioned encoding of SignedTransaction for HTTP submission
+[dependencies.iroha_version]
+path = "../iroha-source/iroha/crates/iroha_version"
+features = ["derive"]
+
+# macOS Secure Enclave / Keychain Services FFI.
+# `security-framework` (safe) covers SE key generation + ECIES encrypt/decrypt.
+# `security-framework-sys` (raw) is kept for low-level constants we still need
+# (BiometryAny ACL flag, accessibility classes) since the safe wrapper hides
+# them.
+# `objc2-local-authentication` for LAContext.evaluatePolicy (Touch ID prompt)
+# — the only biometric path that works for ad-hoc-signed CLI binaries on
+# Sequoia (Keychain biometric ACL itself is blocked without Developer ID).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2"
+security-framework-sys = "2"
+core-foundation = "0.9"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-local-authentication = "0.3"
+block2 = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"

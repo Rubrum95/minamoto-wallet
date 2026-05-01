@@ -1,0 +1,1337 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minamoto Wallet</title>
+<style>
+  :root {
+    /* Sora-themed dark palette, matching sorametrics.org accent.
+       Background gradient cools the canvas; orange (#FF7849) drives
+       interactive surfaces. */
+    --bg-0: #07070a;
+    --bg-1: #11111a;
+    --bg-2: #1a1a26;
+    --fg-0: #fafafa;
+    --fg-1: #c8c8d0;
+    --fg-2: #8a8a96;
+    --accent:      #FF7849;            /* Sora orange */
+    --accent-2:    #FF5E80;            /* Sora pink */
+    --accent-soft: rgba(255,120,73,0.14);
+    --ok: #10B981;
+    --warn: #F59E0B;
+    --err: #EF4444;
+    --border: rgba(255,255,255,0.08);
+  }
+  body::before {
+    /* Subtle radial glow behind everything; lifts the page from being
+       a flat-black block. Inspired by sorametrics' ambient backdrop. */
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(900px 600px at 80% -10%, rgba(255,120,73,0.10), transparent 60%),
+      radial-gradient(700px 500px at -10% 110%, rgba(255,94,128,0.08), transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .container, .topbar { position: relative; z-index: 1; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-0);
+    color: var(--fg-0);
+    font: 14px/1.5 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px;
+    background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar .brand { display: flex; flex-direction: column; gap: 2px; }
+  .topbar h1 {
+    margin: 0; font-size: 15px; letter-spacing: 0.10em; font-weight: 700;
+    background: linear-gradient(135deg, #FF7849, #FF5E80);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .topbar .tagline { font-size: 10.5px; color: var(--fg-2); letter-spacing: 0.03em; }
+  .topbar .net { font-size: 11px; color: var(--accent); padding: 3px 9px; border: 1px solid var(--accent); border-radius: 999px; }
+  .container { max-width: 880px; margin: 0 auto; padding: 22px; }
+
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+  }
+  .card h2 { margin: 0 0 10px 0; font-size: 14px; font-weight: 600; color: var(--fg-1); letter-spacing: 0.02em; text-transform: uppercase; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .col { display: flex; flex-direction: column; gap: 6px; }
+  .grow { flex: 1; }
+  .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .muted { color: var(--fg-2); }
+  .tiny  { font-size: 11px; }
+
+  input, select, textarea {
+    width: 100%;
+    background: var(--bg-2); color: var(--fg-0);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: inherit;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+  label { display: block; font-size: 11px; color: var(--fg-2); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  button {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff; font: inherit; font-weight: 600;
+    border: none; border-radius: 8px; padding: 10px 18px; cursor: pointer;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 6px 16px rgba(255,120,73,0.18);
+  }
+  button:hover { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 8px 22px rgba(255,120,73,0.32); }
+  button:active { transform: translateY(0); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+  button.ghost {
+    background: transparent; color: var(--fg-1); border: 1px solid var(--border);
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.danger {
+    background: transparent; color: var(--err); border: 1px solid var(--err);
+  }
+  button.danger:hover { background: var(--err); color: #0a0a0c; }
+
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill.ok   { background: rgba(16,185,129,0.15);  color: var(--ok); border: 1px solid rgba(16,185,129,0.40); }
+  .pill.warn { background: rgba(245,158,11,0.15);  color: var(--warn); border: 1px solid rgba(245,158,11,0.40); }
+  .pill.err  { background: rgba(239,68,68,0.15);   color: var(--err); border: 1px solid rgba(239,68,68,0.40); }
+
+  .toast {
+    position: fixed; bottom: 22px; right: 22px;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 18px;
+    max-width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.40);
+    transition: opacity 0.3s ease;
+  }
+  .toast.ok   { border-left: 3px solid var(--ok); }
+  .toast.warn { border-left: 3px solid var(--warn); }
+  .toast.err  { border-left: 3px solid var(--err); }
+
+  .seed-warn {
+    background: rgba(245,158,11,0.10);
+    border: 1px solid var(--warn);
+    border-radius: 10px; padding: 14px 18px;
+    color: var(--fg-1);
+  }
+  .seed-warn h3 { margin: 0 0 8px 0; color: var(--warn); font-size: 13px; }
+  .seed-words {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    background: var(--bg-2); padding: 14px; border-radius: 8px; margin: 12px 0;
+  }
+  .seed-word {
+    font-family: "SF Mono", monospace; font-size: 13px;
+    padding: 6px 4px; background: rgba(255,255,255,0.03); border-radius: 4px;
+    text-align: center;
+  }
+  .seed-word::before { content: attr(data-i); color: var(--fg-2); font-size: 9px; margin-right: 6px; }
+
+  .hidden { display: none !important; }
+
+  /* Password modal */
+  .pwd-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(7,7,10,0.78); backdrop-filter: blur(6px);
+    display: flex; align-items: center; justify-content: center;
+    animation: fadeIn 0.15s ease;
+  }
+  .pwd-card {
+    width: 92%; max-width: 420px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+  }
+  .pwd-card h3 {
+    margin: 0 0 4px 0; font-size: 15px; letter-spacing: 0.05em; text-transform: uppercase;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .pwd-card label { margin-top: 12px; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.20); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--fg-2); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <img id="topLogo" src="/assets/logo.png" alt="" onerror="this.style.display='none'"
+       style="height: 36px; width: 36px; object-fit: contain; border-radius: 8px; filter: drop-shadow(0 2px 8px rgba(255,120,73,0.35));">
+  <div class="brand">
+    <h1>MINAMOTO WALLET</h1>
+    <div class="tagline">Iroha 3 · Touch&nbsp;ID-protected</div>
+  </div>
+  <span class="net">mainnet</span>
+  <div class="grow"></div>
+  <select id="walletSelect" style="width: auto; min-width: 200px;"></select>
+  <button class="ghost" id="newBtn">+ New</button>
+  <button class="ghost" id="lockBtn" title="Forget cached passwords now (re-prompt next sign)">Lock</button>
+  <button class="ghost" id="quitBtn" title="Stop the local wallet server">Quit</button>
+</div>
+
+<!-- Password modal — appears when the server replies 401 need_password
+     to a signing request. Same modal is also used to set up a v2
+     password during wallet creation. Vanilla DOM, no framework. -->
+<div id="pwdOverlay" class="pwd-overlay hidden" role="dialog" aria-modal="true">
+  <div class="pwd-card">
+    <h3 id="pwdTitle">Unlock wallet</h3>
+    <p class="tiny muted" id="pwdSubtitle">Enter the password used at wallet creation.</p>
+    <label for="pwdInput">Password</label>
+    <input id="pwdInput" type="password" autocomplete="current-password" autofocus>
+    <div id="pwdConfirmRow" class="hidden" style="margin-top: 10px;">
+      <label for="pwdConfirmInput">Confirm</label>
+      <input id="pwdConfirmInput" type="password" autocomplete="new-password">
+    </div>
+    <div id="pwdError" class="pill err hidden" style="margin-top: 10px;"></div>
+    <div class="row" style="margin-top: 14px; justify-content: flex-end;">
+      <button class="ghost" id="pwdCancel">Cancel</button>
+      <button id="pwdConfirm">Unlock</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <!-- New wallet flow -->
+  <div id="newForm" class="card hidden">
+    <h2>Generate new wallet</h2>
+    <p class="tiny muted">Stores a fresh Ed25519 seed in your macOS Keychain (P-256 wrapped). The 24-word BIP39 mnemonic appears once — write it on paper, never digital.</p>
+    <label>Wallet label</label>
+    <input id="newLabel" placeholder="e.g. main" autocomplete="off">
+    <div class="row" style="margin-top: 12px;">
+      <button id="genBtn">Generate</button>
+      <button class="ghost" id="cancelNewBtn">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Mnemonic display (one-shot) -->
+  <div id="mnemonicCard" class="card hidden">
+    <div class="seed-warn">
+      <h3>WRITE THIS DOWN — only chance</h3>
+      <p class="tiny">If the Keychain item is lost (Mac wipe, biometric reset, OS reinstall), this 24-word phrase is the ONLY way to recover the wallet. Store it on paper, in a safe.</p>
+      <p class="tiny" style="color: var(--err); margin-top: 6px;"><strong>While this card is open</strong>, the words live in your browser's memory (DOM, network panel, JS heap). Don't open DevTools, don't take screenshots through screen-recording extensions. Clicking <em>Continue</em> reloads the page to wipe browser state.</p>
+      <div class="seed-words" id="mnemonicWords"></div>
+      <div class="row">
+        <label style="margin: 0; flex: 0;"><input type="checkbox" id="confirmedSeed" style="width: auto; margin-right: 6px;">I have written down the phrase</label>
+        <div class="grow"></div>
+        <button id="ackSeedBtn" disabled>Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active wallet view -->
+  <div id="walletView" class="hidden">
+    <div class="card">
+      <h2>Wallet info</h2>
+      <div class="col">
+        <div>
+          <label>Label</label>
+          <div class="mono" id="wLabel">—</div>
+        </div>
+        <div>
+          <label>I105 address (recipient)</label>
+          <div class="mono" id="wI105" style="user-select: all;">—</div>
+        </div>
+        <div>
+          <label>Public key (Ed25519)</label>
+          <div class="mono tiny" id="wPubkey">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Balance</h2>
+      <div id="wBalance" class="muted">Loading…</div>
+      <div class="row" style="margin-top: 10px;">
+        <button class="ghost" id="refreshBalanceBtn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Send XOR</h2>
+      <p class="tiny muted">Submitting will trigger a Touch ID prompt, sign with the wrapped seed, and POST the signed transaction to <code>https://minamoto.sora.org/transaction</code>.</p>
+      <label>Recipient I105</label>
+      <input id="sendTo" placeholder="sora..." autocomplete="off">
+      <label style="margin-top: 10px;">Amount (XOR)</label>
+      <input id="sendAmount" placeholder="0.5" autocomplete="off">
+      <div class="row" style="margin-top: 14px;">
+        <button id="sendBtn">Sign &amp; send</button>
+      </div>
+      <div id="sendResult" class="hidden" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Shield XOR (privacy)</h2>
+      <p class="tiny muted">Convert public XOR into a confidential note. The chain records only a 32-byte Poseidon commitment and an opaque payload — no observer can see the amount or owner. <strong>Phase-1 limitation:</strong> we ship the encryption-payload as zeros so this wallet must keep the local note record to spend the note later. Lose the local file → the XOR stays on chain but is not spendable.</p>
+      <label>Amount (XOR, integer)</label>
+      <input id="shieldAmount" placeholder="1" autocomplete="off">
+      <div class="row" style="margin-top: 14px;">
+        <button id="shieldBtn">Sign &amp; shield</button>
+      </div>
+      <div id="shieldResult" class="hidden" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>My confidential payment address (v3)</h2>
+      <p class="tiny muted">A shareable URI anyone can use to send you confidential XOR. The URI carries your shielded owner_tag + diversifier — without your seed, nobody can spend the notes that target it. Generating it requires Touch ID (we derive the material from the wallet seed) but you only need to do it once and can publish it on Twitter / a website / a QR code.</p>
+      <div class="row" style="margin-top: 8px;">
+        <button id="addrShowBtn">Reveal my address (Touch ID)</button>
+        <button class="ghost hidden" id="addrCopyBtn">Copy URI</button>
+        <button class="ghost hidden" id="addrHideBtn">Hide</button>
+      </div>
+      <div id="addrResult" class="hidden" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Pay confidential address</h2>
+      <p class="tiny muted">Shield XOR directly to a third-party <code>iroha:confidential:v3:…</code> URI. The on-chain commitment will be owned by THEM, not us — so we don't keep a local note copy. <strong>Phase-1 limitation:</strong> the recipient cannot auto-discover the note from the chain (we ship the encryption payload as zeros). After a successful pay, share the returned <code>rho</code> with them out-of-band (DM, Signal) so they can register the note locally and spend it later.</p>
+      <label>Recipient v3 URI</label>
+      <textarea id="payRecipient" rows="3" placeholder="iroha:confidential:v3:…" style="resize: vertical;"></textarea>
+      <label style="margin-top: 10px;">Amount (XOR, integer)</label>
+      <input id="payAmount" placeholder="1" autocomplete="off">
+      <label style="margin-top: 10px; display: flex; align-items: center; gap: 6px; text-transform: none; font-size: 13px; color: var(--fg-1);">
+        <input type="checkbox" id="payDryRun" style="width: auto;">
+        <span>Dry run — derive commitment without Touch ID, signing or chain submit</span>
+      </label>
+      <div class="row" style="margin-top: 14px;">
+        <button id="payBtn">Sign &amp; pay</button>
+      </div>
+      <div id="payResult" class="hidden" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Local shielded notes</h2>
+      <p class="tiny muted">Each Shield you create persists here. They are required to spend the note later (Phase 2). Status <code>spendable</code> = the note has not been used as input of a future Unshield/ZkTransfer.</p>
+      <div id="notesList" class="muted">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Reveal recovery secrets</h2>
+      <p class="tiny muted">Show the 24-word BIP39 mnemonic and the raw private key for this wallet. The mnemonic is the disaster-recovery backup you should have written on paper at creation time; the raw seed/private key is for importing into another Iroha 3 wallet or the official CLI. <strong>Anyone with these can drain the wallet.</strong></p>
+      <p class="tiny" style="color: var(--warn); margin-top: 8px;">⚠ Do this only in a private setting. After viewing, click <em>Hide</em> — the values are scrubbed from the DOM.</p>
+      <div class="row" style="margin-top: 8px;">
+        <button id="revealBtn">Reveal (password required)</button>
+        <button class="ghost hidden" id="revealHideBtn">Hide</button>
+      </div>
+      <div id="revealResult" class="hidden" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Danger zone</h2>
+      <p class="tiny muted">Permanently deletes the Keychain item and the on-disk wallet file. ONLY recoverable from the 24-word mnemonic you wrote down at generation. <strong>Also destroys all your local shielded note records — the on-chain XOR will be permanently un-spendable.</strong></p>
+      <button class="danger" id="deleteBtn">Delete this wallet</button>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div id="emptyState" class="card hidden">
+    <h2>No wallets yet</h2>
+    <p class="muted">Click <strong>+ New</strong> on the top bar to create your first Minamoto wallet.</p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+'use strict';
+
+// All UI rendering goes through textContent or createElement+appendChild —
+// never innerHTML — so every value coming from the local API or user
+// input is treated as plain text. There is no XSS surface even though
+// the server is local-only.
+
+const $ = (q) => document.querySelector(q);
+
+const state = {
+  wallets: [],
+  current: null,
+};
+
+function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'dataset') Object.assign(node.dataset, v);
+    else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null) continue;
+    node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+
+// Build a small token logo. Returns an HTMLElement (inline-SVG for XOR,
+// a placeholder dot for unknown assets). 32×32 final, uses the page's
+// Sora gradient so logos visually match buttons / accents.
+function tokenGlyph(symbol) {
+  const wrap = el('div', { style:
+    'width: 32px; height: 32px; border-radius: 50%; display: flex; ' +
+    'align-items: center; justify-content: center; ' +
+    'background: linear-gradient(135deg, #FF7849, #FF5E80); ' +
+    'box-shadow: 0 4px 14px rgba(255,120,73,0.35);' });
+  if (symbol === 'XOR') {
+    // Half-width katakana 天 (heavens) — Sora's mark. White on the
+    // accent gradient gives a recognisable 32px badge without needing
+    // an external PNG.
+    wrap.appendChild(el('span', { style:
+      'color: #fff; font-size: 18px; font-weight: 700; line-height: 1; ' +
+      'font-family: -apple-system, "Hiragino Sans", system-ui, sans-serif;' },
+      '天'));
+  } else {
+    wrap.appendChild(el('span', { style:
+      'color: rgba(255,255,255,0.85); font-size: 11px; font-weight: 700;' },
+      (symbol || '?').slice(0, 2).toUpperCase()));
+  }
+  return wrap;
+}
+
+function setSpinnerText(parent, label) {
+  clearChildren(parent);
+  parent.appendChild(el('span', { class: 'spinner' }));
+  parent.appendChild(document.createTextNode(' ' + label));
+}
+
+// Plain fetch wrapper. Throws on non-2xx, decodes JSON on Content-Type.
+function api(path, opts) {
+  return fetch(path, opts).then(async (r) => {
+    if (!r.ok) {
+      let body = null;
+      try { body = await r.json(); } catch (_) {}
+      const msg = (body && body.error) || `HTTP ${r.status}`;
+      const err = new Error(msg);
+      err.status = r.status;
+      err.body = body;
+      throw err;
+    }
+    const ct = r.headers.get('content-type') || '';
+    return ct.includes('application/json') ? r.json() : r.text();
+  });
+}
+
+// Wrapper for signing endpoints. If the backend replies 401 with
+// `need_password: true`, opens the password modal; on success, retries
+// the same request with the password embedded in the body. The
+// password is then cached server-side for the rest of the session
+// (5-min sliding TTL) so subsequent signing ops skip the modal.
+async function apiSigning(path, opts) {
+  try {
+    return await api(path, opts);
+  } catch (e) {
+    if (e.status !== 401 || !e.body || !e.body.need_password) throw e;
+    const pwd = await promptPassword({
+      title: `Unlock '${e.body.label}'`,
+      subtitle: 'Enter the password used at wallet creation. The wallet stays unlocked for 5 minutes.',
+    });
+    if (pwd == null) throw new Error('cancelled');
+    // Retry with password merged into the body.
+    const merged = JSON.parse(opts.body || '{}');
+    merged.password = pwd;
+    return api(path, { ...opts, body: JSON.stringify(merged) });
+  }
+}
+
+// Promise-based modal. Resolves with the typed string, or null on
+// cancel. Reuses the same DOM nodes for unlock and create-password
+// flows; the second prompts twice for confirm.
+function promptPassword({ title = 'Unlock wallet', subtitle = '', confirm = false } = {}) {
+  return new Promise((resolve) => {
+    $('#pwdTitle').textContent = title;
+    $('#pwdSubtitle').textContent = subtitle;
+    $('#pwdConfirmRow').classList.toggle('hidden', !confirm);
+    $('#pwdInput').value = '';
+    $('#pwdConfirmInput').value = '';
+    $('#pwdError').classList.add('hidden');
+    $('#pwdConfirm').textContent = confirm ? 'Create' : 'Unlock';
+    $('#pwdInput').type = confirm ? 'password' : 'password';
+    $('#pwdInput').autocomplete = confirm ? 'new-password' : 'current-password';
+
+    const overlay = $('#pwdOverlay');
+    overlay.classList.remove('hidden');
+    setTimeout(() => $('#pwdInput').focus(), 0);
+
+    const cleanup = () => {
+      overlay.classList.add('hidden');
+      $('#pwdInput').value = '';
+      $('#pwdConfirmInput').value = '';
+      $('#pwdConfirm').onclick = null;
+      $('#pwdCancel').onclick = null;
+      $('#pwdInput').onkeydown = null;
+      $('#pwdConfirmInput').onkeydown = null;
+    };
+
+    const ok = () => {
+      const a = $('#pwdInput').value;
+      if (!a) { showPwdError('Password required.'); return; }
+      if (confirm) {
+        const b = $('#pwdConfirmInput').value;
+        if (a !== b) { showPwdError('Passwords do not match.'); return; }
+        if (a.length < 8) { showPwdError('Password must be at least 8 characters.'); return; }
+      }
+      cleanup(); resolve(a);
+    };
+    const cancel = () => { cleanup(); resolve(null); };
+
+    $('#pwdConfirm').onclick = ok;
+    $('#pwdCancel').onclick = cancel;
+    $('#pwdInput').onkeydown = (e) => { if (e.key === 'Enter') ok(); else if (e.key === 'Escape') cancel(); };
+    $('#pwdConfirmInput').onkeydown = (e) => { if (e.key === 'Enter') ok(); else if (e.key === 'Escape') cancel(); };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tx cost estimation
+// ---------------------------------------------------------------------------
+//
+// Minamoto's `/v1/parameters` returns an empty `nexus.fees` block —
+// Soramitsu doesn't bill a per-tx fee on regular instructions today.
+// Empirically: a Transfer of 0.5 XOR loses exactly 0.5 XOR; a Shield
+// of 1 XOR loses exactly 1 XOR. The only material cost observed is
+// `Register::Account` (~0.021 XOR, one-time per wallet).
+//
+// We surface this honestly: an estimate in the confirm modal, then
+// the real fee derived from balance delta after Committed.
+
+const REGISTER_FEE_XOR = '0.021'; // observed empirically, mi-wallet block 37
+
+/// Numeric estimate (in XOR) for the network fee of the next signing
+/// op. Empirical model from observed Minamoto txs (May 2026):
+///
+///   - Each on-chain instruction costs ~0.01 XOR.
+///   - Auto-Register prepends one extra instruction → +0.01 XOR.
+///   - A plain Transfer/Shield is one instruction → ≈0.01 XOR.
+///
+/// The chain doesn't expose a fee-quote endpoint and `/v1/parameters`
+/// declares `nexus.fees` empty, so this is a derived figure, not an
+/// authoritative one. The post-commit toast (`reportRealFee`) reports
+/// the exact figure from balance delta as the source of truth.
+function estimateFeeXor(walletInfo) {
+  if (walletInfo && !walletInfo.registered_on_chain) {
+    return 0.02; // Transfer + one-time Register prepended
+  }
+  return 0.01;   // single instruction
+}
+
+function estimateFeeText(walletInfo) {
+  const fee = estimateFeeXor(walletInfo);
+  if (walletInfo && !walletInfo.registered_on_chain) {
+    return `≈ ${fee.toFixed(2)} XOR (1 Transfer + 1 one-time Register::Account)`;
+  }
+  return `≈ ${fee.toFixed(2)} XOR (per on-chain instruction)`;
+}
+
+/// Build the "Total debited" line for the confirm modal: amount typed
+/// + estimated fee, displayed concretely so the user sees a single
+/// number instead of "amount + fee" math.
+function totalDebitedText(amount, walletInfo) {
+  const a = parseFloat(amount);
+  const f = estimateFeeXor(walletInfo);
+  if (!Number.isFinite(a)) return `${amount} XOR + ${f.toFixed(2)} fee`;
+  // Up to 6 decimals, trim trailing zeros so 0.310000 → 0.31.
+  const total = (a + f).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  return `${total} XOR (${amount} sent + ${f.toFixed(2)} fee)`;
+}
+
+let walletInfoCache = null; // populated by loadWallet()
+
+/// Snapshot the XOR balance before submitting a tx so we can report
+/// the actual fee paid afterwards. Returns the numeric XOR balance or
+/// null if balance fetch fails (we just skip the post-tx delta in
+/// that case). Pure read, no auth needed.
+async function snapshotXorBalance() {
+  if (!state.current) return null;
+  try {
+    const b = await api(`/api/wallet/${encodeURIComponent(state.current)}/balance`);
+    const xor = (b.assets || []).find((a) => a.symbol === 'XOR');
+    if (!xor) return null;
+    const n = parseFloat(xor.value);
+    return Number.isFinite(n) ? n : null;
+  } catch (_) { return null; }
+}
+
+/// Compare a pre-tx balance to the current chain balance and toast the
+/// real fee paid. Polls a few times because the chain may take a
+/// block (~333 ms) for the new balance to surface in the explorer.
+async function reportRealFee(beforeXor, amountSent) {
+  if (beforeXor == null) return;
+  // Try up to 6 times over ~6 seconds — the explorer typically
+  // refreshes within 1-2 blocks.
+  for (let i = 0; i < 6; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const after = await snapshotXorBalance();
+    if (after == null) continue;
+    if (after === beforeXor) continue; // not refreshed yet
+    const delta = beforeXor - after;
+    const fee = delta - parseFloat(amountSent);
+    // Round to 6 decimals to avoid float jitter in the toast.
+    const feeStr = fee.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    if (Math.abs(fee) < 1e-9) {
+      toast('ok', `Fee paid: 0 XOR (delta = -${parseFloat(amountSent)} XOR exactly).`, 6000);
+    } else {
+      toast('ok', `Fee paid: ${feeStr} XOR (balance −${delta.toFixed(6)}).`, 6000);
+    }
+    return;
+  }
+}
+
+function showPwdError(msg) {
+  const el = $('#pwdError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// In-page confirm() replacement — WKWebView silently rejects native
+// `window.confirm` (no UIDelegate is wired by tao+wry by default,
+// which means the call resolves to `false` immediately and the
+// caller never sees any dialog). Our custom modal renders correctly
+// inside the web view and returns a Promise<boolean>.
+//
+// Reuses the password-modal overlay so we don't add a second one.
+function confirmDialog({ title, message, confirmText = 'Continue', cancelText = 'Cancel', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const overlay = $('#pwdOverlay');
+    const card = overlay.querySelector('.pwd-card');
+    const original = card.cloneNode(true);
+    clearChildren(card);
+
+    card.appendChild(el('h3', null, title || 'Are you sure?'));
+    if (message) {
+      const p = el('p', { class: 'tiny muted', style: 'white-space: pre-wrap;' }, message);
+      card.appendChild(p);
+    }
+    const btnRow = el('div', { class: 'row', style: 'margin-top: 18px; justify-content: flex-end;' });
+    const cancel = el('button', { class: 'ghost' }, cancelText);
+    const ok = el('button', danger
+      ? { class: 'danger', style: 'background: var(--err); color: white;' }
+      : null,
+      confirmText);
+    btnRow.appendChild(cancel);
+    btnRow.appendChild(ok);
+    card.appendChild(btnRow);
+    overlay.classList.remove('hidden');
+    setTimeout(() => ok.focus(), 0);
+
+    const close = (val) => {
+      overlay.classList.add('hidden');
+      card.replaceWith(original);
+      resolve(val);
+    };
+    ok.addEventListener('click', () => close(true));
+    cancel.addEventListener('click', () => close(false));
+    document.addEventListener('keydown', function once(e) {
+      if (e.key === 'Escape') { document.removeEventListener('keydown', once); close(false); }
+      else if (e.key === 'Enter') { document.removeEventListener('keydown', once); close(true); }
+    });
+  });
+}
+
+function toast(kind, msg, ms = 4000) {
+  const t = $('#toast');
+  t.className = `toast ${kind}`;
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+function show(panelId) {
+  for (const id of ['newForm', 'mnemonicCard', 'emptyState', 'walletView']) {
+    $('#' + id).classList.toggle('hidden', id !== panelId);
+  }
+}
+
+function showWalletView() { show('walletView'); }
+function showNewForm()    { show('newForm'); $('#newLabel').value = ''; $('#newLabel').focus(); }
+function showEmpty()      { show('emptyState'); }
+
+function showMnemonic(words) {
+  show('mnemonicCard');
+  const wrap = $('#mnemonicWords');
+  clearChildren(wrap);
+  words.split(/\s+/).forEach((w, i) => {
+    wrap.appendChild(el('div', {
+      class: 'seed-word',
+      dataset: { i: String(i + 1).padStart(2, '0') },
+    }, w));
+  });
+  $('#confirmedSeed').checked = false;
+  $('#ackSeedBtn').disabled = true;
+}
+
+async function refreshWalletList() {
+  const r = await api('/api/wallets');
+  state.wallets = r.labels || [];
+  const sel = $('#walletSelect');
+  clearChildren(sel);
+  if (state.wallets.length === 0) {
+    sel.appendChild(el('option', { value: '' }, '(no wallets)'));
+    state.current = null;
+    showEmpty();
+  } else {
+    for (const l of state.wallets) sel.appendChild(el('option', { value: l }, l));
+    if (!state.current || !state.wallets.includes(state.current)) {
+      state.current = state.wallets[0];
+    }
+    sel.value = state.current;
+    await loadWallet(state.current);
+  }
+}
+
+async function loadWallet(label) {
+  state.current = label;
+  showWalletView();
+  $('#wLabel').textContent = label;
+  $('#wI105').textContent = '…';
+  $('#wPubkey').textContent = '…';
+  $('#wBalance').textContent = 'Loading…';
+  $('#sendResult').classList.add('hidden');
+  $('#shieldResult').classList.add('hidden');
+  $('#payResult').classList.add('hidden');
+  $('#payRecipient').value = '';
+  $('#payAmount').value = '';
+  $('#payDryRun').checked = false;
+  // Reset the confidential-address reveal state — the URI we showed for
+  // the previous wallet would be misleading if we kept it visible while
+  // the user is now looking at a different wallet's view.
+  hideAddress();
+  // Same logic for the recovery-secrets card: never leak the previous
+  // wallet's mnemonic into the next wallet's view.
+  hideSecrets();
+  try {
+    const info = await api(`/api/wallet/${encodeURIComponent(label)}/info`);
+    walletInfoCache = info;
+    $('#wI105').textContent = info.i105 || '—';
+    $('#wPubkey').textContent = info.public_key || '—';
+    refreshBalance();
+    refreshNotes();
+  } catch (e) {
+    toast('err', `Cannot load wallet: ${e.message}`);
+  }
+}
+
+async function refreshNotes() {
+  if (!state.current) return;
+  const wrap = $('#notesList');
+  setSpinnerText(wrap, 'Loading…');
+  try {
+    const r = await api(`/api/wallet/${encodeURIComponent(state.current)}/notes`);
+    clearChildren(wrap);
+    if (!r.notes || r.notes.length === 0) {
+      wrap.appendChild(el('span', { class: 'muted' },
+        'No shielded notes yet. Run a Shield to create one.'));
+      return;
+    }
+    const tbody = el('tbody');
+    for (const n of r.notes) {
+      const cm = (n.commitment || '').slice(0, 14) + '…';
+      const tx = (n.created_tx_hash || '').slice(0, 14) + '…';
+      const status = n.spendable
+        ? el('span', { class: 'pill ok' }, 'spendable')
+        : el('span', { class: 'pill warn' }, 'spent');
+      tbody.appendChild(el('tr', null,
+        el('td', { class: 'mono' }, n.amount + ' XOR'),
+        el('td', { class: 'mono', title: n.commitment }, cm),
+        el('td', { class: 'mono', title: n.created_tx_hash }, tx),
+        el('td', null, status)));
+    }
+    const table = el('table', null,
+      el('thead', null, el('tr', null,
+        el('th', null, 'Amount'),
+        el('th', null, 'Commitment'),
+        el('th', null, 'Created tx'),
+        el('th', null, 'Status'))),
+      tbody);
+    wrap.appendChild(table);
+  } catch (e) {
+    clearChildren(wrap);
+    wrap.appendChild(el('span', { class: 'pill err' }, e.message));
+  }
+}
+
+async function shieldXor() {
+  if (!state.current) return;
+  const amount = $('#shieldAmount').value.trim();
+  if (!amount) { toast('warn', 'Amount required.'); return; }
+  if (!/^\d+$/.test(amount)) { toast('warn', 'Amount must be a non-negative integer.'); return; }
+  const balanceBefore = await snapshotXorBalance();
+  if (!(await confirmDialog({
+    title: `Shield ${amount} XOR`,
+    message:
+      `Convert ${amount} XOR public → confidential note.\n\n` +
+      `Estimated fee: ${estimateFeeText(walletInfoCache)}\n` +
+      `Total debited: ${totalDebitedText(amount, walletInfoCache)}\n\n` +
+      'The local note record will be saved — required to spend the note later.',
+    confirmText: 'Sign & shield',
+  }))) return;
+  $('#shieldBtn').disabled = true;
+  const result = $('#shieldResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, 'Touch ID prompt about to appear…');
+  try {
+    const r = await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}/shield`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount }),
+    });
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill ok' }, 'SHIELDED'));
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 8px;' },
+      'tx hash:    ' + r.tx_hash));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'commitment: ' + r.commitment));
+    const link = el('a', {
+      href: 'https://sorametrics.org/minamoto#tx/' + r.tx_hash,
+      target: '_blank', rel: 'noopener',
+    }, 'View on SoraMetrics');
+    result.appendChild(el('div', { class: 'tiny', style: 'margin-top: 6px;' }, link));
+    $('#shieldAmount').value = '';
+    setTimeout(() => { refreshBalance(); refreshNotes(); }, 3000);
+    reportRealFee(balanceBefore, amount);
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+  } finally {
+    $('#shieldBtn').disabled = false;
+  }
+}
+
+async function refreshBalance() {
+  if (!state.current) return;
+  setSpinnerText($('#wBalance'), 'Loading…');
+  try {
+    const b = await api(`/api/wallet/${encodeURIComponent(state.current)}/balance`);
+    const wrap = $('#wBalance');
+    clearChildren(wrap);
+    if (!b.assets || b.assets.length === 0) {
+      wrap.appendChild(el('span', { class: 'muted' },
+        'No assets — wallet has not received any tokens yet.'));
+      return;
+    }
+    const tbody = el('tbody');
+    for (const a of b.assets) {
+      // Logo cell — currently only XOR has a built-in glyph; everything
+      // else gets a placeholder dot. Adding more is a one-liner per token.
+      const logoCell = el('td', { style: 'width: 38px; padding-right: 4px;' });
+      logoCell.appendChild(tokenGlyph(a.symbol));
+      // Symbol + (subtle) def_id under it for context.
+      const labelCell = el('td', null,
+        el('div', { style: 'font-weight: 600; letter-spacing: 0.02em;' }, a.symbol || a.def_id || '?'),
+        el('div', { class: 'mono tiny muted', style: 'margin-top: 2px;' },
+            (a.def_id || '').slice(0, 22) + ((a.def_id || '').length > 22 ? '…' : '')));
+      // Amount — right-aligned, larger.
+      const amount = a.value || a.quantity || '?';
+      const amountCell = el('td', { style: 'text-align: right; font-variant-numeric: tabular-nums;' },
+        el('span', { class: 'mono', style: 'font-size: 16px; font-weight: 600;' }, amount));
+      tbody.appendChild(el('tr', null, logoCell, labelCell, amountCell));
+    }
+    const table = el('table', null,
+      el('thead', null, el('tr', null,
+        el('th', null, ''),
+        el('th', null, 'Asset'),
+        el('th', { style: 'text-align: right;' }, 'Amount'))),
+      tbody);
+    wrap.appendChild(table);
+  } catch (e) {
+    const wrap = $('#wBalance');
+    clearChildren(wrap);
+    wrap.appendChild(el('span', { class: 'pill err' }, e.message));
+  }
+}
+
+async function sendXor() {
+  if (!state.current) return;
+  const to = $('#sendTo').value.trim();
+  const amount = $('#sendAmount').value.trim();
+  if (!to || !amount) { toast('warn', 'Recipient and amount required.'); return; }
+  const balanceBefore = await snapshotXorBalance();
+  if (!(await confirmDialog({
+    title: `Send ${amount} XOR`,
+    message:
+      `Recipient: ${to.slice(0, 28)}…\n\n` +
+      `Estimated fee: ${estimateFeeText(walletInfoCache)}\n` +
+      `Total debited: ${totalDebitedText(amount, walletInfoCache)}`,
+    confirmText: 'Sign & send',
+  }))) return;
+  $('#sendBtn').disabled = true;
+  const result = $('#sendResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, 'Touch ID prompt about to appear…');
+  try {
+    const r = await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, amount }),
+    });
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill ok' }, 'SENT'));
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 8px;' },
+      'tx hash: ' + r.tx_hash));
+    const link = el('a', {
+      href: 'https://sorametrics.org/minamoto#tx/' + r.tx_hash,
+      target: '_blank', rel: 'noopener',
+    }, 'View on SoraMetrics');
+    result.appendChild(el('div', { class: 'tiny', style: 'margin-top: 6px;' }, link));
+    $('#sendTo').value = ''; $('#sendAmount').value = '';
+    setTimeout(refreshBalance, 3000);
+    reportRealFee(balanceBefore, amount);
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+  } finally {
+    $('#sendBtn').disabled = false;
+  }
+}
+
+async function generateWallet() {
+  const label = $('#newLabel').value.trim();
+  if (!label) { toast('warn', 'Label required.'); return; }
+  // First, prompt the user for a v2 password (twice, with confirmation).
+  const password = await promptPassword({
+    title: `Set password for '${label}'`,
+    subtitle: 'Encrypts the seed at rest. Required for every signing op (cached 5 min after each unlock).',
+    confirm: true,
+  });
+  if (password == null) return;
+  $('#genBtn').disabled = true;
+  setSpinnerText($('#genBtn'), 'Deriving KEK (argon2id, ~1s)…');
+  try {
+    const r = await api('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, password }),
+    });
+    showMnemonic(r.mnemonic);
+    toast('ok', `Wallet "${label}" created. Write the seed phrase down NOW.`);
+  } catch (e) {
+    toast('err', e.message);
+  } finally {
+    $('#genBtn').disabled = false;
+    clearChildren($('#genBtn'));
+    $('#genBtn').appendChild(document.createTextNode('Generate'));
+  }
+}
+
+async function ackMnemonic() {
+  // Hardening: scrub the DOM nodes carrying the 24 words BEFORE the
+  // page transitions, then force a full reload so the fetch response
+  // for /api/generate (which still lives in the network panel and the
+  // JS response cache) is wiped from browser memory. The user has to
+  // re-navigate to the wallet view but it's a one-shot cost we pay
+  // once per wallet creation.
+  const wrap = $('#mnemonicWords');
+  if (wrap) clearChildren(wrap);
+  // Remove any cached references to the response body.
+  if (typeof window.gc === 'function') { try { window.gc(); } catch (_) {} }
+  // location.reload() also clears DevTools Network history for this tab
+  // (in Safari/Chrome the network panel is per-document, not per-tab).
+  window.location.reload();
+}
+
+async function revealSecrets() {
+  if (!state.current) return;
+  if (!(await confirmDialog({
+    title: `Reveal recovery secrets for '${state.current}'`,
+    message:
+      'The 24-word mnemonic and raw private key will be displayed in this window. ' +
+      'Anyone seeing them can take full control of the wallet. ' +
+      'Make sure no one is looking over your shoulder.',
+    confirmText: 'I understand — reveal',
+    danger: true,
+  }))) return;
+  $('#revealBtn').disabled = true;
+  const result = $('#revealResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, 'Unlocking…');
+  try {
+    const r = await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}/reveal-secrets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    clearChildren(result);
+    // Mnemonic — primary backup
+    result.appendChild(el('label', null, 'BIP39 Mnemonic (24 words)'));
+    result.appendChild(el('textarea', {
+      readonly: 'readonly', rows: '3',
+      style: 'resize: none; word-break: break-word;',
+    }, r.mnemonic));
+    // Raw seed hex
+    result.appendChild(el('label', { style: 'margin-top: 12px;' }, 'Raw seed (32-byte hex)'));
+    result.appendChild(el('input', {
+      readonly: 'readonly', value: r.seed_hex, class: 'mono',
+    }));
+    // Iroha-formatted private key
+    result.appendChild(el('label', { style: 'margin-top: 12px;' },
+      'Iroha private_key (paste into client.toml)'));
+    result.appendChild(el('input', {
+      readonly: 'readonly', value: r.iroha_private_key, class: 'mono',
+    }));
+    // Public key for sanity-check that this matches the wallet
+    result.appendChild(el('label', { style: 'margin-top: 12px;' },
+      'Public key (for verification — already public)'));
+    result.appendChild(el('div', { class: 'mono tiny muted' }, r.public_key));
+    $('#revealHideBtn').classList.remove('hidden');
+    $('#revealBtn').classList.add('hidden');
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+    $('#revealBtn').disabled = false;
+  }
+}
+
+function hideSecrets() {
+  const result = $('#revealResult');
+  clearChildren(result);
+  result.classList.add('hidden');
+  $('#revealHideBtn').classList.add('hidden');
+  $('#revealBtn').classList.remove('hidden');
+  $('#revealBtn').disabled = false;
+}
+
+async function deleteWallet() {
+  if (!state.current) return;
+  if (!(await confirmDialog({
+    title: `Permanently delete '${state.current}'?`,
+    message:
+      'You will be asked to type 3 random words from your BIP39 mnemonic backup. ' +
+      'Have your paper backup ready before continuing — without it you cannot complete the deletion ' +
+      '(and recovery would be impossible anyway).',
+    confirmText: 'I have my mnemonic — continue',
+    danger: true,
+  }))) return;
+
+  // Step 1: ask the server for a fresh challenge (3 random word indices).
+  let challenge;
+  try {
+    challenge = await api(`/api/wallet/${encodeURIComponent(state.current)}/delete-challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+  } catch (e) { toast('err', e.message); return; }
+
+  // Step 2: collect the 3 words via a custom modal.
+  const words = await promptDeleteWords(state.current, challenge.indices);
+  if (words == null) return;
+
+  // Step 3: send DELETE with the answer. The server may still reply
+  // 401 need_password (if session was idle and no cache) — apiSigning
+  // handles that.
+  try {
+    await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        challenge_token: challenge.challenge_token,
+        words,
+      }),
+    });
+    toast('ok', `Wallet "${state.current}" deleted.`);
+    state.current = null;
+    await refreshWalletList();
+  } catch (e) {
+    toast('err', e.message);
+  }
+}
+
+// Reuse the password modal DOM but re-purpose it for a 3-word
+// challenge. Returns Promise<string[3]> or null on cancel.
+function promptDeleteWords(label, indices) {
+  return new Promise((resolve) => {
+    const overlay = $('#pwdOverlay');
+    const card = overlay.querySelector('.pwd-card');
+    // We swap the card's inner DOM out and back so the existing styling
+    // applies and we don't need a second overlay.
+    const original = card.cloneNode(true);
+
+    clearChildren(card);
+    card.appendChild(el('h3', null, `Confirm delete of '${label}'`));
+    card.appendChild(el('p', { class: 'tiny muted' },
+      'Type 3 words from your BIP39 mnemonic backup at the positions shown ' +
+      'below. The positions are picked randomly server-side; case and ' +
+      'whitespace don\'t matter.'));
+
+    const inputs = [];
+    for (let i = 0; i < 3; i++) {
+      const idx = indices[i];
+      const row = el('div', { style: 'margin-top: 12px;' });
+      row.appendChild(el('label', null, `Word #${idx + 1}`));
+      const input = el('input', {
+        type: 'text', autocomplete: 'off', spellcheck: 'false',
+        class: 'mono', style: 'text-transform: lowercase;',
+      });
+      row.appendChild(input);
+      card.appendChild(row);
+      inputs.push(input);
+    }
+    const errPill = el('div', { class: 'pill err hidden', style: 'margin-top: 10px;' });
+    card.appendChild(errPill);
+    const btnRow = el('div', { class: 'row', style: 'margin-top: 14px; justify-content: flex-end;' });
+    const cancelBtn = el('button', { class: 'ghost' }, 'Cancel');
+    const okBtn = el('button', { class: 'danger', style: 'background: var(--err); color: white;' }, 'Delete wallet');
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(okBtn);
+    card.appendChild(btnRow);
+
+    overlay.classList.remove('hidden');
+    setTimeout(() => inputs[0].focus(), 0);
+
+    const restore = () => {
+      overlay.classList.add('hidden');
+      // Restore the password card DOM so subsequent password unlocks work.
+      card.replaceWith(original);
+    };
+    const cancel = () => { restore(); resolve(null); };
+    const submit = () => {
+      const vals = inputs.map((i) => i.value.trim().toLowerCase());
+      if (vals.some((v) => !v)) {
+        errPill.textContent = 'All three words are required.';
+        errPill.classList.remove('hidden');
+        return;
+      }
+      restore(); resolve(vals);
+    };
+    cancelBtn.addEventListener('click', cancel);
+    okBtn.addEventListener('click', submit);
+    inputs.forEach((inp, i) => {
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          if (i < 2) inputs[i + 1].focus();
+          else submit();
+        } else if (e.key === 'Escape') cancel();
+      });
+    });
+  });
+}
+
+// Hidden until the user pulls the address; we never auto-fetch it because
+// the GET triggers a Touch ID prompt.
+let lastAddressUri = null;
+
+async function revealAddress() {
+  if (!state.current) return;
+  $('#addrShowBtn').disabled = true;
+  const result = $('#addrResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, 'Touch ID prompt about to appear…');
+  try {
+    // confidential-address is a GET — apiSigning expects body, so we
+    // handle the 401 case manually for this one endpoint.
+    let r;
+    try {
+      r = await api(`/api/wallet/${encodeURIComponent(state.current)}/confidential-address`);
+    } catch (e) {
+      if (e.status !== 401 || !e.body || !e.body.need_password) throw e;
+      const pwd = await promptPassword({
+        title: `Unlock '${e.body.label}'`,
+        subtitle: 'Enter the password used at wallet creation.',
+      });
+      if (pwd == null) throw new Error('cancelled');
+      // Pre-warm the session, then re-issue the GET.
+      await api('/api/session/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: state.current, password: pwd }),
+      });
+      r = await api(`/api/wallet/${encodeURIComponent(state.current)}/confidential-address`);
+    }
+    lastAddressUri = r.uri || '';
+    clearChildren(result);
+    result.appendChild(el('label', null, 'URI (share this)'));
+    result.appendChild(el('textarea', {
+      readonly: 'readonly',
+      rows: '4',
+      style: 'resize: vertical; word-break: break-all;',
+    }, r.uri));
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 10px;' },
+      'Owner tag:    ' + (r.owner_tag_hex || '—')));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'Diversifier:  ' + (r.diversifier_hex || '—')));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'Receive ID:   ' + (r.receive_key_id || '—')));
+    $('#addrCopyBtn').classList.remove('hidden');
+    $('#addrHideBtn').classList.remove('hidden');
+    $('#addrShowBtn').classList.add('hidden');
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+    $('#addrShowBtn').disabled = false;
+  }
+}
+
+function hideAddress() {
+  lastAddressUri = null;
+  const result = $('#addrResult');
+  clearChildren(result);
+  result.classList.add('hidden');
+  $('#addrCopyBtn').classList.add('hidden');
+  $('#addrHideBtn').classList.add('hidden');
+  $('#addrShowBtn').classList.remove('hidden');
+  $('#addrShowBtn').disabled = false;
+}
+
+async function copyAddress() {
+  if (!lastAddressUri) return;
+  try {
+    await navigator.clipboard.writeText(lastAddressUri);
+    toast('ok', 'Address URI copied to clipboard.');
+  } catch (e) {
+    toast('err', 'Clipboard write failed: ' + e.message);
+  }
+}
+
+async function payAddress() {
+  if (!state.current) return;
+  const recipient = $('#payRecipient').value.trim();
+  const amount = $('#payAmount').value.trim();
+  const dryRun = $('#payDryRun').checked;
+  if (!recipient || !amount) { toast('warn', 'Recipient URI and amount required.'); return; }
+  if (!/^iroha:confidential:v3:/.test(recipient)) {
+    toast('warn', 'Recipient must start with `iroha:confidential:v3:`.');
+    return;
+  }
+  if (!/^\d+$/.test(amount)) {
+    toast('warn', 'Amount must be a non-negative integer (Shield ISI rejects fractions).');
+    return;
+  }
+  const balanceBefore = !dryRun ? await snapshotXorBalance() : null;
+  if (!dryRun && !(await confirmDialog({
+    title: `Pay ${amount} XOR (confidential)`,
+    message:
+      `Recipient address (truncated):\n${recipient.slice(0, 60)}…\n\n` +
+      `Estimated fee: ${estimateFeeText(walletInfoCache)}\n` +
+      `Total debited: ${totalDebitedText(amount, walletInfoCache)}\n\n` +
+      'The note will belong to the recipient. You must share the ' +
+      'returned rho with them out-of-band (Phase-1 limitation).',
+    confirmText: 'Sign & pay',
+  }))) return;
+
+  $('#payBtn').disabled = true;
+  const result = $('#payResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, dryRun ? 'Deriving (no Touch ID)…' : 'Touch ID prompt about to appear…');
+  try {
+    const r = await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}/pay-address`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient, amount, dry_run: dryRun }),
+    });
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill ok' }, r.dry_run ? 'DRY RUN OK' : 'PAID'));
+    if (!r.dry_run) {
+      result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 8px;' },
+        'tx hash:    ' + r.tx_hash));
+    }
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 8px;' },
+      'amount:     ' + r.amount + ' XOR'));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'commitment: ' + r.commitment));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'rho:        ' + r.rho));
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 6px;' },
+      'recipient owner_tag:    ' + r.recipient_owner_tag));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      'recipient diversifier:  ' + r.recipient_diversifier));
+    if (!r.dry_run) {
+      const link = el('a', {
+        href: 'https://sorametrics.org/minamoto#tx/' + r.tx_hash,
+        target: '_blank', rel: 'noopener',
+      }, 'View on SoraMetrics');
+      result.appendChild(el('div', { class: 'tiny', style: 'margin-top: 6px;' }, link));
+      result.appendChild(el('p', { class: 'tiny', style: 'margin-top: 10px; color: var(--warn);' },
+        '⚠ Share the rho above with the recipient (DM/Signal). Without it ' +
+        'they cannot register the note locally and spend it later.'));
+      // The note belongs to the recipient, not us — but balance dropped
+      // by the shielded amount. Refresh to reflect that.
+      setTimeout(refreshBalance, 3000);
+      reportRealFee(balanceBefore, amount);
+    } else {
+      result.appendChild(el('p', { class: 'tiny muted', style: 'margin-top: 10px;' },
+        'Dry run only: no Touch ID, no signing, no transaction submitted. ' +
+        'Verify owner_tag/diversifier match what the recipient publicly advertised.'));
+    }
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+  } finally {
+    $('#payBtn').disabled = false;
+  }
+}
+
+// Wire UI
+$('#newBtn').addEventListener('click', showNewForm);
+$('#cancelNewBtn').addEventListener('click', () =>
+  state.wallets.length ? loadWallet(state.current || state.wallets[0]) : showEmpty());
+$('#genBtn').addEventListener('click', generateWallet);
+$('#walletSelect').addEventListener('change', (e) => loadWallet(e.target.value));
+$('#confirmedSeed').addEventListener('change', (e) => $('#ackSeedBtn').disabled = !e.target.checked);
+$('#ackSeedBtn').addEventListener('click', ackMnemonic);
+$('#refreshBalanceBtn').addEventListener('click', refreshBalance);
+$('#sendBtn').addEventListener('click', sendXor);
+$('#shieldBtn').addEventListener('click', shieldXor);
+$('#addrShowBtn').addEventListener('click', revealAddress);
+$('#addrCopyBtn').addEventListener('click', copyAddress);
+$('#addrHideBtn').addEventListener('click', hideAddress);
+$('#payBtn').addEventListener('click', payAddress);
+$('#revealBtn').addEventListener('click', revealSecrets);
+$('#revealHideBtn').addEventListener('click', hideSecrets);
+$('#deleteBtn').addEventListener('click', deleteWallet);
+$('#lockBtn').addEventListener('click', async () => {
+  try {
+    await api('/api/session/lock', { method: 'POST' });
+    toast('ok', 'All wallets locked. Next sign re-prompts password.');
+  } catch (e) { toast('err', e.message); }
+});
+$('#quitBtn').addEventListener('click', async () => {
+  if (!(await confirmDialog({
+    title: 'Stop the wallet server?',
+    message: 'The window will go offline. Re-open Minamoto Wallet to start it again.',
+    confirmText: 'Quit',
+  }))) return;
+  try { await api('/api/quit', { method: 'POST' }); } catch (_) {}
+  // After the server exits, the page becomes useless — replace it with
+  // a clear "stopped" message so the user doesn't keep clicking.
+  document.body.innerHTML = '';
+  const msg = el('div', {
+    style: 'text-align:center; padding:60px 20px; color:#8a8a96; font:14px -apple-system,system-ui,sans-serif;',
+  },
+    el('div', { style: 'font-size:48px; margin-bottom:18px;' }, '◌'),
+    el('div', { style: 'color:#fafafa; font-size:18px; margin-bottom:6px;' }, 'Wallet server stopped'),
+    el('div', null, 'Re-open Minamoto Wallet to start it again.'));
+  document.body.appendChild(msg);
+});
+
+// Boot
+refreshWalletList().catch((e) => toast('err', e.message));
+</script>
+</body>
+</html>
