@@ -26,7 +26,7 @@ risk**, or **deferred**).
 
 ### CRITICAL
 
-#### C1 — Software keychain wrap is not biometric-ACL-bound (accepted, documented Phase-0 limitation)
+#### C1 — ~~Software keychain wrap is not biometric-ACL-bound~~ → **CLOSED via Phase-1 password encryption (2026-05-01)**
 
 The seed is wrapped with a **software** P-256 key in the user's
 `login.keychain`, with **no `kSecAttrAccessControl` biometric flag**.
@@ -66,6 +66,19 @@ touch.
 - Wallet record dir is `0700`, files `0600`.
 - BIP39 mnemonic is the only off-machine secret (paper backup).
 - Single-user Mac assumption documented in `WALLET_DESIGN.md`.
+
+**Resolution (2026-05-01)**: this entire concern is structurally
+eliminated by the Phase-1 keystore migration. New wallets (and
+existing v1 wallets after `migrate-v2`) encrypt the seed with a
+user-chosen password via argon2id (m=64MB, t=3) + AES-256-GCM. The
+encrypted blob lives in the wallet JSON file; the Keychain plays no
+role in custody anymore. Local malware reading the JSON gets nothing
+without the password (offline brute-force ≈1s/guess on M1, so a
+strong passphrase is impractical to crack). See `src/password.rs` and
+`STATUS.md` for the full design. Both `mi-wallet` and `prova 2` were
+migrated; the dead-code `make_access_control()` path is kept only for
+the audit experiment (`bio-test`) that confirmed the entitlement
+gating empirically.
 
 ---
 
@@ -167,20 +180,18 @@ only for testnet-style debugging, not for routine use.
 (e.g. `--i-understand-this-prints-my-seed`) to stop accidental
 double-tab-completion runs.
 
-#### M3 — `LAContext` policy is `DeviceOwnerAuthentication` (password fallback) (accepted)
+#### M3 — ~~`LAContext` policy is `DeviceOwnerAuthentication`~~ → **OBSOLETE** (2026-05-01)
 
-We use `LAPolicy(2)` instead of `LAPolicy(1)` — i.e. biometric **or
-device password**. If the user's macOS password is compromised, an
-attacker with the unlocked screen can satisfy the prompt by entering
-the password.
+The decorative `biometric::prompt` call inside the v2 unlock_seed path
+was removed. v2 wallets (post-migration) now use the wallet password as
+the sole auth factor, with no LAContext popup. Touch ID survives only
+in:
 
-**Why we picked it**: pure biometric mode rate-limits aggressively
-(after 3 failed reads it locks the wallet entirely until reboot or
-sudo unlock — terrible UX). Looser policy is documented in-source.
+- The DELETE handler (explicit destruction gate).
+- The legacy v1 unlock path (kept for users who haven't migrated yet).
 
-**Accepted risk**: for a custodial wallet on a single-user Mac, the
-device-password fallback is the same trust boundary as the user's
-session login.
+The original concern (device-password fallback being equivalent to
+session login) is therefore moot for the canonical Phase-1 flow.
 
 #### M4 — Torii responses are not authenticated end-to-end (accepted)
 
@@ -238,12 +249,13 @@ or hurt vs. that.
 **Recommendation**: document for the user that they should consider
 their Time Machine target as secret-bearing.
 
-#### L4 — `mark-registered` flag flip doesn't verify against chain (accepted)
-`minamoto-wallet mark-registered <label>` flips the local
-`registered_on_chain` flag without consulting the chain. Misuse
-makes the next transfer/shield omit the auto-Register prepend, and
-the chain rejects with "Failed to find asset". Self-correcting; no
-funds at risk.
+#### L4 — ~~`mark-registered` flag flip doesn't verify against chain~~ → **FIXED (2026-05-01)**
+`transfer.rs` and `shield.rs` now consult the chain via
+`torii::account_exists(i105)` before deciding whether to prepend
+`Register::Account`. If the chain disagrees with the local flag we
+update the local flag forward. The `mark-registered` CLI command
+remains for offline use, but its output no longer matters at signing
+time — the chain is the source of truth.
 
 #### L5 — adhoc-signed binary, no notarization (accepted, distribution)
 First-launch Gatekeeper warning. Required for `Cmd+Click → Open`
@@ -279,12 +291,36 @@ it.
 
 ---
 
-## Fixes applied in this audit
+## Fixes applied (chronological, post-audit)
 
-1. **H1**: `Host` header validation in `ui::handle()`.
-2. **H2**: Server-side `biometric::prompt()` gate inside the DELETE
-   handler.
-3. **L6**: Quit endpoint indirectly protected by H1.
+1. **H1** (2026-05-01): `Host` header validation in `ui::handle()`.
+2. **H2** (2026-05-01): server-side `biometric::prompt()` gate inside
+   the DELETE handler.
+3. **L6** (2026-05-01): Quit endpoint indirectly protected by H1.
+4. **C1 closed via Phase-1** (2026-05-01): full migration to
+   password-encrypted (argon2id + AES-256-GCM) keystore. The
+   Keychain-based attack surface for v2 wallets is structurally
+   eliminated. `migrate-v2 <label>` for legacy v1 wallets.
+5. **WKWebView `confirm()` bug** (2026-05-01): native `window.confirm`
+   silently returned false in WKWebView, breaking Send / Shield /
+   Pay / Reveal / Delete buttons. Replaced with custom modal
+   (`confirmDialog()`).
+6. **M3 obsoleted** (2026-05-01): decorative LAContext prompt removed
+   from v2 unlock — was confusing users into typing the macOS
+   password instead of the wallet password.
+7. **Sudo elevation for reveal-secrets** (2026-05-01): `take_password`
+   gained a `bypass_cache: bool`. Reveal-secrets uses it so the
+   wallet password is re-prompted every time, even when the session
+   is warm.
+8. **Delete-with-mnemonic-check** (2026-05-01): the DELETE flow now
+   challenges the user with three random words from their BIP39
+   mnemonic before proceeding, on top of H2's biometric gate. Server
+   issues a single-use challenge token; words are validated against
+   a re-derived mnemonic from the unlocked seed.
+9. **L4 fixed** (2026-05-01): chain-truth verification of
+   `registered_on_chain` via `torii::account_exists()` before
+   prepending Register::Account. Local flag is now a cache, not a
+   source of truth.
 
 See git log for the diff.
 
