@@ -32,11 +32,60 @@
     content: '';
     position: fixed; inset: 0;
     background:
-      radial-gradient(900px 600px at 12% -8%, rgba(255,106,0,0.12), transparent 60%),
-      radial-gradient(900px 600px at 92% 110%, rgba(30,144,255,0.12), transparent 60%);
+      radial-gradient(900px 600px at 12% -8%, rgba(255,106,0,0.14), transparent 60%),
+      radial-gradient(900px 600px at 92% 110%, rgba(30,144,255,0.14), transparent 60%);
     pointer-events: none;
     z-index: 0;
   }
+  body::after {
+    /* HUD overlay: thin white crosshair lines through the viewport
+       centre (kept faint and faded toward the edges with a radial
+       mask so they don't draw the eye). The futuristic-Japanese
+       feel comes from the combination with the radar ring + tick
+       marks injected as SVG below. */
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      linear-gradient(180deg,
+        transparent calc(50% - 0.5px),
+        rgba(255,255,255,0.07) 50%,
+        transparent calc(50% + 0.5px)),
+      linear-gradient(90deg,
+        transparent calc(50% - 0.5px),
+        rgba(255,255,255,0.07) 50%,
+        transparent calc(50% + 0.5px));
+    mask: radial-gradient(ellipse 80% 65% at 50% 50%, black, transparent 95%);
+    -webkit-mask: radial-gradient(ellipse 80% 65% at 50% 50%, black, transparent 95%);
+  }
+
+  /* Radar-style concentric ring with tick marks, fixed at the viewport
+     centre. Built as inline SVG so the strokes scale crisp on retina. */
+  .hud-ring {
+    position: fixed; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(720px, 70vmin);
+    aspect-ratio: 1;
+    pointer-events: none;
+    opacity: 0.55;
+    z-index: 0;
+  }
+
+  /* Four corner brackets — orange on the left side (matching the
+     icon's warm half), blue on the right. Tiny LED dot at each
+     vertex echoes the icon's HUD accents. */
+  .hud-corner {
+    position: fixed;
+    width: 56px; height: 56px;
+    pointer-events: none; z-index: 0;
+    opacity: 0.75;
+  }
+  .hud-corner.tl { top: 14px; left: 14px; }
+  .hud-corner.tr { top: 14px; right: 14px; transform: scaleX(-1); }
+  .hud-corner.bl { bottom: 14px; left: 14px; transform: scaleY(-1); }
+  .hud-corner.br { bottom: 14px; right: 14px; transform: scale(-1, -1); }
+
   .container, .topbar { position: relative; z-index: 1; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -369,6 +418,66 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- Futuristic-Japanese HUD overlay: a centred radar with tick marks
+     plus orange/blue corner brackets. All decoration; sits at z-index
+     0 behind every interactive surface. The SVG markup is hand-built
+     (no template engine) and parameter-free, so it ships verbatim
+     without escaping concerns. -->
+<svg class="hud-ring" viewBox="0 0 600 600" aria-hidden="true">
+  <defs>
+    <radialGradient id="ring-fade" cx="50%" cy="50%" r="50%">
+      <stop offset="60%" stop-color="rgba(255,255,255,0)"/>
+      <stop offset="80%" stop-color="rgba(255,255,255,0.16)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+  </defs>
+  <!-- Concentric rings -->
+  <circle cx="300" cy="300" r="180" fill="none"
+          stroke="rgba(255,255,255,0.08)" stroke-width="0.7"/>
+  <circle cx="300" cy="300" r="240" fill="none"
+          stroke="rgba(255,255,255,0.05)" stroke-width="0.7"/>
+  <circle cx="300" cy="300" r="280" fill="none"
+          stroke="url(#ring-fade)" stroke-width="0.7"/>
+  <!-- Tick marks: 72 around the inner ring, longer every 30°. Drawn
+       as a single <path> for size; each segment starts at r=240 and
+       extends inward by `len`. Strokes share the same colour; the
+       major-tick weight comes from doubled overlap on the same path
+       region. -->
+  <g class="hud-ticks" stroke="rgba(255,255,255,0.10)" stroke-width="0.8"
+     fill="none" transform="translate(300 300)">
+    <!-- 72 lines, every 5°, generated below by JS -->
+  </g>
+  <!-- Centre crosshair (small, tighter than viewport-wide one) -->
+  <line x1="300" y1="280" x2="300" y2="320"
+        stroke="rgba(255,255,255,0.25)" stroke-width="0.7"/>
+  <line x1="280" y1="300" x2="320" y2="300"
+        stroke="rgba(255,255,255,0.25)" stroke-width="0.7"/>
+  <!-- Centre LED -->
+  <circle cx="300" cy="300" r="2"
+          fill="rgba(255,255,255,0.55)"/>
+</svg>
+
+<svg class="hud-corner tl" viewBox="0 0 56 56" aria-hidden="true">
+  <path d="M 4 24 L 4 4 L 24 4" fill="none"
+        stroke="rgba(255,106,0,0.45)" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="4" cy="4" r="2.5" fill="rgba(255,106,0,0.85)"/>
+</svg>
+<svg class="hud-corner tr" viewBox="0 0 56 56" aria-hidden="true">
+  <path d="M 4 24 L 4 4 L 24 4" fill="none"
+        stroke="rgba(30,144,255,0.45)" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="4" cy="4" r="2.5" fill="rgba(30,144,255,0.85)"/>
+</svg>
+<svg class="hud-corner bl" viewBox="0 0 56 56" aria-hidden="true">
+  <path d="M 4 24 L 4 4 L 24 4" fill="none"
+        stroke="rgba(255,106,0,0.45)" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="4" cy="4" r="2.5" fill="rgba(255,106,0,0.85)"/>
+</svg>
+<svg class="hud-corner br" viewBox="0 0 56 56" aria-hidden="true">
+  <path d="M 4 24 L 4 4 L 24 4" fill="none"
+        stroke="rgba(30,144,255,0.45)" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="4" cy="4" r="2.5" fill="rgba(30,144,255,0.85)"/>
+</svg>
 
 <script>
 'use strict';
@@ -1351,6 +1460,32 @@ $('#quitBtn').addEventListener('click', async () => {
     el('div', null, 'Re-open Minamoto Wallet to start it again.'));
   document.body.appendChild(msg);
 });
+
+// Generate the 72 radar tick marks once at boot. Each tick is a short
+// vertical line at r ∈ [240-len, 240], rotated to its angle. Major
+// ticks (every 30°) are longer + brighter, minor ticks shorter +
+// fainter — same trick the icon uses to pick out cardinal compass
+// directions.
+(function buildRadarTicks() {
+  const g = document.querySelector('.hud-ring .hud-ticks');
+  if (!g) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  for (let i = 0; i < 72; i++) {
+    const angle = i * 5;
+    const major = (i % 6 === 0);     // every 30°
+    const len = major ? 16 : 8;
+    const opacity = major ? 0.22 : 0.12;
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', '0');
+    line.setAttribute('y1', `${-(240 - len)}`);
+    line.setAttribute('x2', '0');
+    line.setAttribute('y2', '-240');
+    line.setAttribute('transform', `rotate(${angle})`);
+    line.setAttribute('stroke', `rgba(255,255,255,${opacity})`);
+    line.setAttribute('stroke-width', major ? '1' : '0.7');
+    g.appendChild(line);
+  }
+})();
 
 // Boot
 refreshWalletList().catch((e) => toast('err', e.message));
