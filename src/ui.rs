@@ -454,13 +454,24 @@ fn handle(mut req: Request) -> Result<()> {
     match (&method, path.as_str()) {
         (Method::Get, "/") => respond_html(req, INDEX_HTML),
 
-        (Method::Get, "/assets/logo.png") => match find_logo_bytes() {
+        (Method::Get, "/assets/logo.png") => match find_asset_bytes("logo.png") {
             Some(bytes) => respond_png(req, &bytes),
             None => respond(
                 req,
                 404,
                 json_string(&ApiError {
                     error: "logo.png not found in bundle Resources or dev dist/",
+                }),
+            ),
+        },
+
+        (Method::Get, "/assets/xor-logo.png") => match find_asset_bytes("xor_logo.png") {
+            Some(bytes) => respond_png(req, &bytes),
+            None => respond(
+                req,
+                404,
+                json_string(&ApiError {
+                    error: "xor_logo.png not found in bundle Resources or dev dist/",
                 }),
             ),
         },
@@ -995,20 +1006,21 @@ fn respond_png(req: Request, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the path of `logo.png` for the current build:
-///   - inside an .app bundle: `Contents/Resources/logo.png` next to the executable.
-///   - dev / CLI run: `dist/logo.png` at the project root.
+/// Resolve the path of an asset file (e.g. `logo.png`, `xor_logo.png`)
+/// for the current build:
+///   - inside an .app bundle: `Contents/Resources/<name>` next to the executable.
+///   - dev / CLI run: `dist/<name>` at the project root.
 /// Returns the file contents on success.
-fn find_logo_bytes() -> Option<Vec<u8>> {
+fn find_asset_bytes(name: &str) -> Option<Vec<u8>> {
     let candidates = [
-        // Inside .app: …/Contents/MacOS/<bin> → ../Resources/logo.png
+        // Inside .app: …/Contents/MacOS/<bin> → ../Resources/<name>
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../Resources/logo.png"))),
-        // Dev: <project>/dist/logo.png
+            .and_then(|p| p.parent().map(|d| d.join("../Resources").join(name))),
+        // Dev: <project>/dist/<name>
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../../dist/logo.png"))),
+            .and_then(|p| p.parent().map(|d| d.join("../../dist").join(name))),
     ];
     for c in candidates.into_iter().flatten() {
         if c.exists() {

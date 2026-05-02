@@ -406,20 +406,30 @@ function el(tag, attrs, ...children) {
 // a placeholder dot for unknown assets). 32×32 final, uses the page's
 // Sora gradient so logos visually match buttons / accents.
 function tokenGlyph(symbol) {
+  // XOR uses a brand-supplied PNG served at /assets/xor-logo.png;
+  // unknown tokens get a 2-letter placeholder. Sized 32×32 with a
+  // soft orange+blue glow that matches the wallet's accent palette.
   const wrap = el('div', { style:
     'width: 32px; height: 32px; border-radius: 50%; display: flex; ' +
-    'align-items: center; justify-content: center; ' +
-    'background: linear-gradient(135deg, #FF6A00 0%, #1E90FF 100%); ' +
-    'box-shadow: 0 4px 12px rgba(255,106,0,0.30), 0 4px 12px rgba(30,144,255,0.20);' });
+    'align-items: center; justify-content: center; overflow: hidden; ' +
+    'box-shadow: 0 4px 12px rgba(255,106,0,0.25), 0 4px 12px rgba(30,144,255,0.18);' });
   if (symbol === 'XOR') {
-    // 安 (peace / safety / shelter) — kanji from the app icon.
-    // White on the orange→blue accent gradient gives a recognisable
-    // 32px badge without needing an external image.
-    wrap.appendChild(el('span', { style:
-      'color: #fff; font-size: 18px; font-weight: 700; line-height: 1; ' +
-      'font-family: -apple-system, "Hiragino Sans", system-ui, sans-serif;' },
-      '安'));
+    const img = el('img', {
+      src: '/assets/xor-logo.png',
+      alt: 'XOR',
+      style: 'width: 100%; height: 100%; object-fit: cover; display: block;',
+    });
+    // If the PNG endpoint 404s for any reason, fall back to a tinted
+    // text mark so the row still renders.
+    img.onerror = () => {
+      img.replaceWith(el('span', { style:
+        'color: #fff; font-size: 14px; font-weight: 700; line-height: 1;' },
+        'XOR'));
+      wrap.style.background = 'linear-gradient(135deg, #FF6A00 0%, #1E90FF 100%)';
+    };
+    wrap.appendChild(img);
   } else {
+    wrap.style.background = 'linear-gradient(135deg, #FF6A00 0%, #1E90FF 100%)';
     wrap.appendChild(el('span', { style:
       'color: rgba(255,255,255,0.88); font-size: 11px; font-weight: 700;' },
       (symbol || '?').slice(0, 2).toUpperCase()));

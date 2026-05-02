@@ -169,6 +169,19 @@ canvas.save(dst, format="PNG", optimize=True)
 print(f"  {w}x{h} → {side}x{side} (transparent square)")
 PY
 fi
+
+# --- Optional XOR token glyph ----------------------------------------
+# If `dist/xor_logo.png` exists, ship it inside Contents/Resources
+# alongside the app icon. The running binary serves it on
+# `/assets/xor-logo.png` and the JS `tokenGlyph()` helper renders it
+# in the Balance card. Square sources work best (32×32 final render);
+# we don't normalize this one — drop in whatever shape you want and
+# CSS `object-fit: cover` handles it.
+XOR_LOGO_SRC="$SCRIPT_DIR/xor_logo.png"
+if [[ -f "$XOR_LOGO_SRC" ]]; then
+    cp "$XOR_LOGO_SRC" "$APP_DST/Contents/Resources/xor_logo.png"
+    echo "==> XOR token glyph embedded ($(stat -f%z "$XOR_LOGO_SRC") bytes)"
+fi
 if [[ -f "$LOGO_PNG" ]]; then
     # Copy as-is into Resources so the running app can serve it on
     # /assets/logo.png for the in-UI header. The binary uses
