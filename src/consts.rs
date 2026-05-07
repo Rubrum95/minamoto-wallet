@@ -43,3 +43,18 @@ pub const XOR_ASSET_DEFINITION_ID: &str = "6TEAJqbb8oEPmLncoNiMRbLEK6tw";
 /// items share this service string; per-wallet uniqueness comes from
 /// `kSecAttrAccount = <wallet_label>`.
 pub const KEYCHAIN_SERVICE: &str = "minamoto-wallet";
+
+/// Pinned commitment hash of the V2 unshield verifying key as of
+/// 2026-05-07. The chain advertises this in `/v1/zk/vk` under
+/// `record.commitment`; if it changes between builds, the wallet
+/// refuses to construct proofs against the new VK because (a) we
+/// haven't audited it and (b) an adversarial verifier can in
+/// principle leak witness data.
+///
+/// To rotate this constant safely:
+///   1. Confirm Soramitsu's VK upgrade is intentional (changelog / governance vote).
+///   2. Regenerate the proving key locally and verify a known proof
+///      still verifies against the new VK.
+///   3. Update this constant in a deliberate commit; users see the bump.
+pub const UNSHIELD_VK_COMMITMENT: &str =
+    "4736be739f171bad842a749930347abd1124c7e6f63ba6976eeb0d491aff3e1d";

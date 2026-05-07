@@ -34,6 +34,7 @@ use crate::torii;
 use anyhow::{Context, Result, bail};
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 const MAGIC: &[u8; 8] = b"MNMTOIDX";
@@ -174,6 +175,17 @@ fn write_cache(snapshot: &IndexSnapshot) -> Result<()> {
     }
     fs::rename(&tmp, &snapshot.cache_path)
         .with_context(|| format!("rename {tmp:?} -> {:?}", snapshot.cache_path))?;
+    // Tighten perms to 0600 — consistent with wallet record files. The
+    // cache contents are public chain data so this is defense in depth,
+    // not a real privacy gate; still better than the default 0644 that
+    // would let other local users read the file even when the directory
+    // is 0700.
+    let mut perms = fs::metadata(&snapshot.cache_path)
+        .with_context(|| format!("stat {:?}", snapshot.cache_path))?
+        .permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(&snapshot.cache_path, perms)
+        .with_context(|| format!("chmod 0600 {:?}", snapshot.cache_path))?;
     Ok(())
 }
 

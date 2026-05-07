@@ -31,6 +31,7 @@ use iroha_core::zk::confidential_v2::{
 };
 use iroha_data_model::ChainId;
 use iroha_data_model::proof::{VerifyingKeyBox, VerifyingKeyId};
+use zeroize::Zeroizing;
 
 /// VK name registered on Minamoto for the V2 unshield circuit.
 /// Sourced empirically from `GET /v1/zk/vk` on 2026-05-07; matches the
@@ -40,6 +41,15 @@ pub const UNSHIELD_VK_NAME: &str = "vk_unshield";
 /// Backend identifier the chain uses for halo2-IPA VK lookups in
 /// `VerifyingKeyId`. Sourced from the same listing.
 pub const UNSHIELD_VK_BACKEND: &str = "halo2/ipa";
+
+/// Toggle verbose logs that leak privacy-sensitive metadata
+/// (note amount, leaf_index, commitment hex) to stderr. Off by
+/// default to keep the confidential layer's privacy promise even
+/// when the user accidentally screenshots the terminal. Enable via
+/// `MINAMOTO_DEBUG=1` for local debugging.
+fn debug_logs_enabled() -> bool {
+    std::env::var_os("MINAMOTO_DEBUG").is_some()
+}
 
 /// Outcome of a successful proof build. We hold the raw `ProofBox` so
 /// the caller can wrap it into a `ProofAttachment` for the Unshield ISI;
@@ -64,9 +74,10 @@ pub struct UnshieldRequest {
     pub asset_def_id: String,
     pub chain_id: String,
     /// 32-byte wallet seed (Touch-ID-unlocked). Treated as `spend_key`
-    /// by the chain; we own this for the duration of the prover call
-    /// and zeroize ourselves on drop higher up the stack.
-    pub spend_key: Vec<u8>,
+    /// by the chain. Wrapped in `Zeroizing` so the bytes are wiped from
+    /// heap when the request is dropped — without this, a core dump,
+    /// memory snapshot, or swap-to-disk would expose the seed.
+    pub spend_key: Zeroizing<Vec<u8>>,
     /// The local note we intend to spend.
     pub note: LocalNote,
     /// Public amount that should land in our transparent balance.
@@ -116,8 +127,10 @@ pub fn build_unshield_proof(req: &UnshieldRequest) -> Result<UnshieldProofBundle
         );
     }
 
-    // Snapshot the chain's confidential ledger from our local cache
-    // (parity with `/v1/zk/roots` already verified by `verify-confidential`).
+    // Snapshot the chain's confidential ledger from our local cache.
+    // We DO NOT trust the cache header's `recorded_root` because a
+    // local attacker with filesystem write access could forge it. The
+    // ground-truth root comes from a fresh `/v1/zk/roots` POST below.
     let snap = indexer::read_cache(&req.asset_def_id)?
         .ok_or_else(|| anyhow!(
             "no indexer cache for {}; run `index-confidential` first",
@@ -129,11 +142,48 @@ pub fn build_unshield_proof(req: &UnshieldRequest) -> Result<UnshieldProofBundle
             snap.commitments.len()
         );
     }
+    // Cross-check parity with the chain in real time. If a Shield
+    // landed since the last `index-confidential`, our cache count is
+    // shorter than `chain_height` and any proof we'd build would bind
+    // to a stale root. Tell the user to refresh rather than racing.
+    let chain_root = torii::fetch_confidential_root(&req.asset_def_id)
+        .context("fetch confidential root for proof binding")?;
+    if (snap.commitments.len() as u32) != chain_root.height {
+        bail!(
+            "cache is stale: local has {} commitments but chain reports {}; \
+             rerun `index-confidential {}` and retry",
+            snap.commitments.len(),
+            chain_root.height,
+            req.asset_def_id,
+        );
+    }
+    // Recompute the root locally from the cached commitments and
+    // assert it matches the chain's `latest`. If the cache file was
+    // tampered with (forged commitments, forged recorded_root) this
+    // is where we catch it — the local recompute uses the same
+    // poseidon_pair the chain uses, so if our recompute disagrees
+    // with the chain, the cache body is wrong.
+    let local_root = crate::merkle::compute_root(&snap.commitments)
+        .context("recompute Merkle root for proof binding")?;
+    if local_root != chain_root.latest {
+        bail!(
+            "cache body integrity check failed: local recomputed root {} \
+             does not match chain root {}. Cache may be corrupt — delete \
+             and rerun `index-confidential {}`.",
+            hex::encode(local_root),
+            hex::encode(chain_root.latest),
+            req.asset_def_id,
+        );
+    }
 
-    // Pull the VK from the chain. The bytes are exactly what
-    // `parse_vk_for_unshield` expects — we don't unpack them here.
-    let vk = torii::fetch_zk_verifying_key(UNSHIELD_VK_NAME)
-        .context("fetch confidential unshield verifying key from Torii")?;
+    // Pull the VK from the chain, pinning its commitment hash so we
+    // refuse to build proofs against a silently-rotated verifier. The
+    // bytes are exactly what `parse_vk_for_unshield` expects.
+    let vk = torii::fetch_zk_verifying_key(
+        UNSHIELD_VK_NAME,
+        Some(crate::consts::UNSHIELD_VK_COMMITMENT),
+    )
+    .context("fetch confidential unshield verifying key from Torii")?;
     let vk_box = VerifyingKeyBox::new(vk.backend.clone(), vk.bytes);
 
     let chain_id = ChainId::from(req.chain_id.clone());
@@ -144,11 +194,15 @@ pub fn build_unshield_proof(req: &UnshieldRequest) -> Result<UnshieldProofBundle
         leaf_index,
     }];
 
-    eprintln!(
-        "[prover] building V2 unshield proof (depth=16 leaf={leaf_index} amount={amount}, \
-         circuit_id='{}')",
-        vk.circuit_id
-    );
+    if debug_logs_enabled() {
+        eprintln!(
+            "[prover] building V2 unshield proof (depth=16 leaf={leaf_index} amount={amount}, \
+             circuit_id='{}')",
+            vk.circuit_id
+        );
+    } else {
+        eprintln!("[prover] building V2 unshield proof — ~30-60s on Apple Silicon…");
+    }
     let proof: ConfidentialUnshieldProofV2 = build_confidential_unshield_proof_v2(
         &chain_id,
         &req.asset_def_id,
@@ -156,16 +210,20 @@ pub fn build_unshield_proof(req: &UnshieldRequest) -> Result<UnshieldProofBundle
         &snap.commitments,
         &inputs,
         req.public_amount,
-        snap.recorded_root,
+        // Bind the proof to the just-fetched chain root rather than
+        // the cache header's claimed root. Both should be equal at
+        // this point (we checked above) but the chain-fetched value
+        // is the trust anchor.
+        chain_root.latest,
         &vk.circuit_id,
         &vk_box,
     )
     .map_err(|err| anyhow!("confidential unshield proof failed: {err}"))?;
-    if proof.root != snap.recorded_root {
+    if proof.root != chain_root.latest {
         bail!(
-            "prover bound its proof to root {} but cache snapshot is {}",
+            "prover bound its proof to root {} but chain root is {}",
             hex::encode(proof.root),
-            hex::encode(snap.recorded_root),
+            hex::encode(chain_root.latest),
         );
     }
 
@@ -243,17 +301,25 @@ pub fn cmd_unshield(
     eprintln!("==== Unshield ====");
     eprintln!("Wallet:        {label}");
     eprintln!("Asset:         {asset_def_id}");
-    eprintln!("Note amount:   {amount} XOR");
-    eprintln!("Note commit:   {}…", &note.commitment_hex[..16]);
+    if debug_logs_enabled() {
+        eprintln!("Note amount:   {amount} XOR");
+        eprintln!("Note commit:   {}…", &note.commitment_hex[..16]);
+    }
     eprintln!();
 
-    let reason = format!("Unshield {amount} XOR back to public balance");
+    // Touch ID prompt text is shown on the macOS auth dialog; keep it
+    // generic so the amount isn't visible to a screen-watcher.
+    let reason = if debug_logs_enabled() {
+        format!("Unshield {amount} XOR back to public balance")
+    } else {
+        "Unshield a confidential note back to public XOR".to_owned()
+    };
     let seed = wallet::unlock_seed(label, &reason, password)?;
     let req = UnshieldRequest {
         label: label.to_owned(),
         asset_def_id: asset_def_id.to_owned(),
         chain_id: chain_id_str.to_owned(),
-        spend_key: seed.to_vec(),
+        spend_key: Zeroizing::new(seed.to_vec()),
         note: note.clone(),
         public_amount: amount,
     };
@@ -292,7 +358,11 @@ pub fn cmd_unshield(
     let chain_id = iroha_data_model::ChainId::from(chain_id_str.to_owned());
     let builder = iroha_data_model::transaction::TransactionBuilder::new(chain_id, to_account)
         .with_instructions(instructions);
-    let kp = KeyPair::from_seed(seed.to_vec(), Algorithm::Ed25519);
+    // KeyPair::from_seed takes Vec<u8> by value; we clone the
+    // Zeroizing-wrapped bytes — the temporary Vec is dropped inside
+    // KeyPair construction. The original `seed` (Zeroizing<[u8;32]>)
+    // and `req.spend_key` (Zeroizing<Vec<u8>>) keep their wipe-on-drop.
+    let kp = KeyPair::from_seed((*req.spend_key).clone(), Algorithm::Ed25519);
     let (_pk, sk): (PublicKey, PrivateKey) = kp.into_parts();
     let signed = builder.sign(&sk);
 
@@ -318,12 +388,19 @@ pub fn cmd_unshield(
     storage::mark_note_spent(label, &note.commitment_hex, &nullifier_hex, &tx_hash_hex)
         .with_context(|| format!("persist spent flag for '{label}'"))?;
 
+    // Post-commit logs: at this point the Unshield ISI is on chain and
+    // the `public_amount + nullifier` are already publicly visible in
+    // the tx body, so printing them here adds no privacy loss beyond
+    // what the chain itself exposes. The pre-spend `commitment_hex`
+    // would link the wallet to a specific tree leaf — gate that one.
     println!();
     println!("✅ Unshield Committed.");
     println!("   tx hash:     {tx_hash_hex}");
     println!("   amount:      {amount} XOR (credited to public balance)");
     println!("   nullifier:   {nullifier_hex}");
-    println!("   commitment:  {} (now spent)", note.commitment_hex);
+    if debug_logs_enabled() {
+        println!("   commitment:  {} (now spent)", note.commitment_hex);
+    }
     println!();
     println!("Verify on chain:");
     println!("  https://sorametrics.org/minamoto#tx/{tx_hash_hex}");
@@ -348,18 +425,24 @@ pub fn cmd_unshield_dry_run(
     eprintln!("==== Unshield dry-run ====");
     eprintln!("Wallet:        {label}");
     eprintln!("Asset:         {asset_def_id}");
-    eprintln!("Note amount:   {amount} XOR");
-    eprintln!("Note commit:   {}…", &note.commitment_hex[..16]);
-    eprintln!("Note leaf idx: {:?}", note.leaf_index);
+    if debug_logs_enabled() {
+        eprintln!("Note amount:   {amount} XOR");
+        eprintln!("Note commit:   {}…", &note.commitment_hex[..16]);
+        eprintln!("Note leaf idx: {:?}", note.leaf_index);
+    }
     eprintln!();
 
-    let reason = format!("Build unshield proof for {amount} XOR (dry-run, no tx submitted)");
+    let reason = if debug_logs_enabled() {
+        format!("Build unshield proof for {amount} XOR (dry-run, no tx submitted)")
+    } else {
+        "Build unshield proof for a confidential note (dry-run, no tx submitted)".to_owned()
+    };
     let seed = wallet::unlock_seed(label, &reason, password)?;
     let req = UnshieldRequest {
         label: label.to_owned(),
         asset_def_id: asset_def_id.to_owned(),
         chain_id: chain_id_str.to_owned(),
-        spend_key: seed.to_vec(),
+        spend_key: Zeroizing::new(seed.to_vec()),
         note,
         public_amount: amount,
     };

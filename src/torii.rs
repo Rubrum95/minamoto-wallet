@@ -320,13 +320,26 @@ pub struct ZkVerifyingKey {
     pub backend: String,
     pub circuit_id: String,
     pub bytes: Vec<u8>,
+    /// Hex-encoded VK commitment as advertised by the chain in the
+    /// `record.commitment` field. Caller pins this against a known
+    /// value to detect silent VK rotation by the chain operator.
+    pub commitment: String,
 }
 
 /// Fetch all registered ZK verifying keys from `GET /v1/zk/vk` and
-/// return the one whose `id.name` equals `name`. The chain returns a
-/// JSON array; each entry has `id.{backend, name}` plus a `record`
-/// containing `key.bytes_b64` (Base64 of the raw VK envelope).
-pub fn fetch_zk_verifying_key(name: &str) -> Result<ZkVerifyingKey> {
+/// return the one whose `id.name` equals `name`. If `expected_commitment`
+/// is `Some`, the function ALSO verifies that the chain-reported
+/// `record.commitment` matches it byte-for-byte and bails otherwise.
+/// This is the trust pin against silent VK rotation (governance upgrade,
+/// node operator swap, MitM during fetch).
+///
+/// The chain returns a JSON array; each entry has `id.{backend, name}`
+/// plus a `record` containing `key.bytes_b64` (Base64 of the raw VK
+/// envelope) and `commitment` (the VK hash).
+pub fn fetch_zk_verifying_key(
+    name: &str,
+    expected_commitment: Option<&str>,
+) -> Result<ZkVerifyingKey> {
     let url = format!("{TORII_BASE}/v1/zk/vk");
     let resp = http()?
         .get(&url)
@@ -363,6 +376,25 @@ pub fn fetch_zk_verifying_key(name: &str) -> Result<ZkVerifyingKey> {
             .pointer("/record/key/bytes_b64")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("zk/vk entry missing /record/key/bytes_b64"))?;
+        let commitment = entry
+            .pointer("/record/commitment")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("zk/vk entry missing /record/commitment"))?
+            .to_string();
+        // Trust pin: refuse silently rotated VKs. A new commitment
+        // means the verifier circuit changed (deliberately or via
+        // attack); proofs we'd build against the new VK might not be
+        // accepted, or worse, leak witness data through an adversarial
+        // verifier. The wallet user MUST upgrade explicitly.
+        if let Some(expected) = expected_commitment
+            && !expected.eq_ignore_ascii_case(&commitment)
+        {
+            bail!(
+                "VK '{name}' commitment changed: expected '{expected}', got '{commitment}'. \
+                 The chain operator may have rotated the verifier — refusing to use the new VK \
+                 until the wallet is updated to pin its hash."
+            );
+        }
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(bytes_b64)
@@ -372,6 +404,7 @@ pub fn fetch_zk_verifying_key(name: &str) -> Result<ZkVerifyingKey> {
             backend,
             circuit_id,
             bytes,
+            commitment,
         });
     }
     bail!("verifying key '{name}' not found among /v1/zk/vk entries")

@@ -43,6 +43,21 @@ struct ApiError<'a> {
     error: &'a str,
 }
 
+/// Replace the user's `$HOME` prefix with `~` in error strings before
+/// they leak to the UI. The HTTP server is loopback-only so this is
+/// not a network privacy gate, but error messages get screenshotted
+/// and shared by users when something breaks; redacting the absolute
+/// path means a screenshot from `/Users/joantoni/...` doesn't expose
+/// the macOS username.
+fn redact_home(s: &str) -> String {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let home = HOME.get_or_init(|| std::env::var("HOME").ok());
+    match home {
+        Some(h) if !h.is_empty() => s.replace(h, "~"),
+        _ => s.to_owned(),
+    }
+}
+
 /// Returned from any endpoint that needs a wallet seed but the
 /// session cache has no fresh password for the target wallet. The
 /// browser sees `need_password: true`, opens the modal, the user
@@ -743,7 +758,7 @@ fn handle(mut req: Request) -> Result<()> {
             let asset_def_id = crate::consts::XOR_ASSET_DEFINITION_ID;
             if let Err(e) = crate::indexer::refresh(asset_def_id) {
                 return respond(req, 502, json_string(&ApiError {
-                    error: &format!("refresh confidential index: {e:#}"),
+                    error: &redact_home(&format!("refresh confidential index: {e:#}")),
                 }));
             }
             if let Ok(Some(snap)) = crate::indexer::read_cache(asset_def_id) {
@@ -761,7 +776,7 @@ fn handle(mut req: Request) -> Result<()> {
             ) {
                 Ok(n) => n,
                 Err(e) => return respond(req, 400, json_string(&ApiError {
-                    error: &format!("{e:#}"),
+                    error: &redact_home(&format!("{e:#}")),
                 })),
             };
             let amount: u128 = match note.amount_u128.parse() {
@@ -784,14 +799,14 @@ fn handle(mut req: Request) -> Result<()> {
                 label: label.clone(),
                 asset_def_id: asset_def_id.to_owned(),
                 chain_id: crate::consts::CHAIN_ID.to_owned(),
-                spend_key: seed.to_vec(),
+                spend_key: zeroize::Zeroizing::new(seed.to_vec()),
                 note: note.clone(),
                 public_amount: amount,
             };
             let bundle = match crate::prover::build_unshield_proof(&req_obj) {
                 Ok(b) => b,
                 Err(e) => return respond(req, 500, json_string(&ApiError {
-                    error: &format!("proof generation failed: {e:#}"),
+                    error: &redact_home(&format!("proof generation failed: {e:#}")),
                 })),
             };
             // Build + submit the Unshield ISI.
@@ -832,7 +847,10 @@ fn handle(mut req: Request) -> Result<()> {
             let chain_id = iroha_data_model::ChainId::from(crate::consts::CHAIN_ID.to_owned());
             let builder = iroha_data_model::transaction::TransactionBuilder::new(chain_id, to_account)
                 .with_instructions(instructions);
-            let kp = KeyPair::from_seed(req_obj.spend_key.clone(), Algorithm::Ed25519);
+            // KeyPair::from_seed takes Vec<u8> by value. The temporary Vec
+            // is dropped inside the call; the original spend_key keeps its
+            // wipe-on-drop wrapper (Zeroizing<Vec<u8>>).
+            let kp = KeyPair::from_seed((*req_obj.spend_key).clone(), Algorithm::Ed25519);
             let (_pk, sk): (PublicKey, PrivateKey) = kp.into_parts();
             let signed = builder.sign(&sk);
             let body_bytes: Vec<u8> = signed.encode_versioned();
@@ -859,7 +877,7 @@ fn handle(mut req: Request) -> Result<()> {
             let nullifier_hex = hex::encode(bundle.nullifiers[0]);
             if let Err(e) = storage::mark_note_spent(&label, &note.commitment_hex, &nullifier_hex, &tx_hash_hex) {
                 return respond(req, 500, json_string(&ApiError {
-                    error: &format!("persist spent flag: {e:#}"),
+                    error: &redact_home(&format!("persist spent flag: {e:#}")),
                 }));
             }
             respond(req, 200, json_string(&UnshieldResponse {

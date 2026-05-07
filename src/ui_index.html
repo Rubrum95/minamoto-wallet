@@ -895,7 +895,27 @@ async function refreshNotes() {
         const btn = el('button', { class: 'ghost' }, 'Unshield');
         btn.style.padding = '4px 10px';
         btn.style.fontSize = '13px';
-        btn.addEventListener('click', () => unshieldNote(n.commitment, n.amount));
+        // Lock against double-click: every Unshield triggers a 30-60s
+        // proof generation + tx submit; a second click would build a
+        // duplicate proof against the same nullifier (chain rejects
+        // the second one but local UX is confusing). Disable the
+        // button while the request is in flight, plus disable ALL
+        // other Unshield buttons in the table to prevent racing two
+        // notes simultaneously (the prover is single-threaded).
+        btn.addEventListener('click', async () => {
+          const allBtns = document.querySelectorAll('#notesList button');
+          allBtns.forEach((b) => { b.disabled = true; });
+          const originalText = btn.textContent;
+          btn.textContent = 'Working…';
+          try {
+            await unshieldNote(n.commitment, n.amount);
+          } finally {
+            // refreshNotes() inside unshieldNote re-renders the table on
+            // success, replacing these buttons. On failure path we restore.
+            btn.textContent = originalText;
+            allBtns.forEach((b) => { b.disabled = false; });
+          }
+        });
         action = btn;
       } else {
         const spentTx = (n.spent_tx_hash || '').slice(0, 14);
