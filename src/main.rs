@@ -15,7 +15,10 @@ mod confidential_address;
 mod consts;
 #[cfg(target_os = "macos")]
 mod delete_challenge;
+mod indexer;
+mod merkle;
 mod password;
+mod prover;
 #[cfg(target_os = "macos")]
 mod shield;
 mod zk_v2;
@@ -154,17 +157,6 @@ enum Cmd {
         amount: String,
     },
 
-    /// Convert a shielded note back to public XOR. NOT YET IMPLEMENTED —
-    /// requires a Halo2-IPA proof over the user's notes (witness
-    /// includes Merkle path to current shielded ledger root). See
-    /// ZK_ROADMAP.md Phase 2.
-    Unshield {
-        /// Wallet label.
-        label: String,
-        /// Public amount to credit out of shielded notes.
-        amount: String,
-    },
-
     /// **DEBUG ONLY** — print Iroha-formatted client.toml for use with
     /// the official `iroha` CLI binary. Triggers Touch ID. Outputs the
     /// private_key in plaintext. Use ONLY for testnet debugging; never
@@ -247,6 +239,77 @@ enum Cmd {
         /// Wallet label.
         label: String,
     },
+
+    /// Refresh the local confidential-ledger cache for an asset (Phase-2,
+    /// step 1). Paginates `/v1/confidential/notes` to completion and
+    /// persists every Shield's `note_commitment` to
+    /// `~/Library/Application Support/minamoto-wallet/cache/<asset>.bin`
+    /// in append (= leaf-index) order. Cross-checks the resulting count
+    /// against `/v1/zk/roots` for parity. No Touch ID — public data only.
+    ///
+    /// This cache is the input for the upcoming Merkle-path module
+    /// (step 2), which is in turn the witness for Unshield / ZkTransfer
+    /// proofs (steps 3-5). See ZK_ROADMAP.md.
+    IndexConfidential {
+        /// Asset definition id. For XOR on Minamoto:
+        /// `6TEAJqbb8oEPmLncoNiMRbLEK6tw`.
+        asset_def_id: String,
+    },
+
+    /// Recompute the depth-16 confidential Merkle root from the local
+    /// cache and verify it matches the chain's recorded root. For each
+    /// `LocalNote` in the wallet that targets the supplied asset, find
+    /// its `leaf_index` in the cache and persist it back into the wallet
+    /// record. No Touch ID — public data only.
+    ///
+    /// Run `index-confidential` first to populate the cache. If the
+    /// recomputed root does not match `recorded_root`, the cache is
+    /// stale or corrupted; rerun `index-confidential` and try again.
+    /// (Phase-2, step 2.)
+    VerifyConfidential {
+        /// Wallet label whose `LocalNote` records to enrich with leaf
+        /// indices.
+        label: String,
+        /// Asset definition id. Defaults to XOR if omitted.
+        #[arg(default_value = consts::XOR_ASSET_DEFINITION_ID)]
+        asset_def_id: String,
+    },
+
+    /// Build a V2 confidential-unshield ZK proof for one of our local
+    /// notes, **without** submitting any transaction. Triggers Touch ID
+    /// because the spend_key (= wallet seed) must be unlocked to derive
+    /// the witness. Use this to validate the prover end-to-end before
+    /// committing to a real on-chain Unshield. (Phase-2, step 3.)
+    UnshieldDryRun {
+        /// Wallet label whose note to spend.
+        label: String,
+        /// Asset definition id. Defaults to XOR.
+        #[arg(default_value = consts::XOR_ASSET_DEFINITION_ID)]
+        asset_def_id: String,
+        /// Optional commitment_hex to pick a specific note when the
+        /// wallet has multiple spendable notes. If omitted and the
+        /// wallet has more than one, the command refuses to guess.
+        #[arg(long)]
+        commitment: Option<String>,
+    },
+
+    /// **Real** confidential unshield: builds the V2 proof, wraps it
+    /// into the `Unshield` ISI, signs the tx with the wallet seed and
+    /// submits to Torii. Waits for the tx to commit. On success, the
+    /// XOR returns to the wallet's transparent balance and the local
+    /// note is marked spent (`spendable=false`, nullifier persisted).
+    /// (Phase-2, step 4.)
+    Unshield {
+        /// Wallet label whose note to spend.
+        label: String,
+        /// Asset definition id. Defaults to XOR.
+        #[arg(default_value = consts::XOR_ASSET_DEFINITION_ID)]
+        asset_def_id: String,
+        /// Optional commitment_hex to pick a specific note when the
+        /// wallet has multiple spendable notes.
+        #[arg(long)]
+        commitment: Option<String>,
+    },
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -267,7 +330,6 @@ fn main() -> Result<()> {
         Cmd::SendXor { label, to, amount } => cmd_send_xor(&label, &to, &amount),
         Cmd::Ui => ui::run(),
         Cmd::Shield { label, amount } => cmd_shield(&label, &amount),
-        Cmd::Unshield { label, amount } => cmd_zk_stub("unshield", &label, &amount),
         Cmd::DumpClientToml { label } => cmd_dump_client_toml(&label),
         Cmd::RegisterSelf { label } => cmd_register_self(&label),
         Cmd::MarkRegistered { label } => cmd_mark_registered(&label),
@@ -280,7 +342,185 @@ fn main() -> Result<()> {
             amount,
             dry_run,
         } => cmd_pay_address(&label, &recipient_address, &amount, dry_run),
+        Cmd::IndexConfidential { asset_def_id } => cmd_index_confidential(&asset_def_id),
+        Cmd::VerifyConfidential { label, asset_def_id } => {
+            cmd_verify_confidential(&label, &asset_def_id)
+        }
+        Cmd::UnshieldDryRun {
+            label,
+            asset_def_id,
+            commitment,
+        } => {
+            let pw = read_password_for(&label)?;
+            prover::cmd_unshield_dry_run(
+                &label,
+                consts::CHAIN_ID,
+                &asset_def_id,
+                commitment.as_deref(),
+                pw.as_deref().map(|s| s.as_str()),
+            )
+        }
+        Cmd::Unshield {
+            label,
+            asset_def_id,
+            commitment,
+        } => {
+            let pw = read_password_for(&label)?;
+            prover::cmd_unshield(
+                &label,
+                consts::CHAIN_ID,
+                &asset_def_id,
+                commitment.as_deref(),
+                pw.as_deref().map(|s| s.as_str()),
+            )
+        }
     }
+}
+
+fn cmd_verify_confidential(label: &str, asset_def_id: &str) -> Result<()> {
+    use std::collections::HashMap;
+
+    eprintln!("==== Verify confidential cache + locate own notes ====");
+    eprintln!("Wallet:              {label}");
+    eprintln!("Asset definition id: {asset_def_id}");
+    eprintln!();
+
+    let snap = indexer::read_cache(asset_def_id)
+        .with_context(|| format!("read cache for {asset_def_id}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no cache found at {}. Run `minamoto-wallet index-confidential {asset_def_id}` first.",
+                indexer::cache_path(asset_def_id).map(|p| p.display().to_string()).unwrap_or_default()
+            )
+        })?;
+
+    eprintln!("Recomputing depth-16 Merkle root over {} commitments…", snap.commitments.len());
+    let computed_root = merkle::compute_root(&snap.commitments)
+        .context("compute_root from cached commitments")?;
+
+    println!("Cache path:        {}", snap.cache_path.display());
+    println!("Cached count:      {}", snap.commitments.len());
+    println!("Recorded root:     {}", hex::encode(snap.recorded_root));
+    println!("Recomputed root:   {}", hex::encode(computed_root));
+    println!();
+
+    if computed_root != snap.recorded_root {
+        anyhow::bail!(
+            "root mismatch: cache holds {} commitments but the local Merkle root \
+             does not match the chain's recorded root. \
+             The cache is likely stale; rerun `index-confidential {asset_def_id}` \
+             and try again.",
+            snap.commitments.len()
+        );
+    }
+    println!("✅ Root parity OK — local tree reproduces chain root.");
+    println!();
+
+    // Build commitment_hex → leaf_index map for the wallet to consult.
+    let mut by_hex: HashMap<String, u32> = HashMap::with_capacity(snap.commitments.len());
+    for (i, c) in snap.commitments.iter().enumerate() {
+        by_hex.insert(hex::encode(c), i as u32);
+    }
+
+    let record = storage::load(label)
+        .with_context(|| format!("load wallet record for '{label}'"))?;
+    let asset_notes: Vec<_> = record
+        .notes
+        .iter()
+        .filter(|n| n.asset_def_id == asset_def_id)
+        .collect();
+    if asset_notes.is_empty() {
+        println!(
+            "Wallet '{label}' has no LocalNote entries for asset {asset_def_id}; \
+             nothing to link."
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "Locating {} local note(s) in the cached tree…",
+        asset_notes.len()
+    );
+
+    let mut found = 0usize;
+    let mut missing: Vec<&str> = Vec::new();
+    for note in &asset_notes {
+        match by_hex.get(&note.commitment_hex) {
+            Some(&idx) => {
+                println!(
+                    "  leaf_index = {:>5}   commitment = {}…   amount = {} XOR",
+                    idx,
+                    &note.commitment_hex[..16],
+                    note.amount_u128
+                );
+                found += 1;
+            }
+            None => {
+                println!(
+                    "  ❓ NOT FOUND       commitment = {}…   amount = {} XOR  (tx {}…)",
+                    &note.commitment_hex[..16],
+                    note.amount_u128,
+                    &note.created_tx_hash_hex.get(..16).unwrap_or(&note.created_tx_hash_hex)
+                );
+                missing.push(&note.commitment_hex);
+            }
+        }
+    }
+    println!();
+
+    let updated = storage::update_leaf_indices(label, &by_hex)
+        .with_context(|| format!("persist leaf_index for '{label}'"))?;
+    println!(
+        "Located {found}/{} note(s); persisted {updated} new leaf_index value(s).",
+        asset_notes.len()
+    );
+
+    if !missing.is_empty() {
+        eprintln!();
+        eprintln!("⚠ {} note(s) missing from the cache. Possible causes:", missing.len());
+        eprintln!("  - The Shield tx is still pending — wait for the next block and rerun.");
+        eprintln!("  - The cache is stale — rerun `index-confidential {asset_def_id}`.");
+        eprintln!("  - The note was created with a non-canonical commitment that we're");
+        eprintln!("    indexing under a different leaf encoding (open-spec gap, please report).");
+        anyhow::bail!("{} local note(s) could not be located on chain", missing.len());
+    }
+    Ok(())
+}
+
+fn cmd_index_confidential(asset_def_id: &str) -> Result<()> {
+    eprintln!("==== Refresh confidential-ledger cache ====");
+    eprintln!("Asset definition id: {asset_def_id}");
+    eprintln!();
+    eprintln!("Paginating /v1/confidential/notes …");
+    let outcome = indexer::refresh(asset_def_id)
+        .with_context(|| format!("refresh index for {asset_def_id}"))?;
+    let snap = &outcome.snapshot;
+    let local_count = snap.commitments.len();
+
+    println!();
+    println!("Pages fetched:    {}", outcome.pages_fetched);
+    println!("Local count:      {local_count}");
+    println!("Chain height:     {}", outcome.chain_height);
+    println!("Recorded root:    {}", hex::encode(snap.recorded_root));
+    println!("Cache path:       {}", snap.cache_path.display());
+    println!(
+        "Fetched at:       {} UTC",
+        chrono::DateTime::from_timestamp(snap.fetched_at_unix, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| snap.fetched_at_unix.to_string())
+    );
+    println!();
+
+    if outcome.parity_ok() {
+        println!("✅ Parity OK — local cache matches chain height.");
+        println!();
+        println!("Next step: build local Merkle tree from this cache and verify");
+        println!("its root equals `recorded_root` above (ZK_ROADMAP.md step 2).");
+    } else {
+        println!("⚠ Parity mismatch — local count {local_count} ≠ chain height {}.", outcome.chain_height);
+        println!("  This usually means a new Shield landed between the last page");
+        println!("  fetch and the root call. Re-run `index-confidential` to catch up.");
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

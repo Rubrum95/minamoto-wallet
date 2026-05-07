@@ -11,7 +11,7 @@
 // We intentionally choose `Application Support` over `Documents` /
 // `Desktop` so the file is excluded from iCloud Drive sync by default.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -94,6 +94,22 @@ pub fn wallet_dir() -> Result<PathBuf> {
             .with_context(|| format!("failed to create wallet dir at {p:?}"))?;
         // Tighten dir perms to 0700 so other users on this Mac (rare on
         // single-user laptops, but possible) can't see our file names.
+        let mut perms = fs::metadata(&p)?.permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&p, perms)?;
+    }
+    Ok(p)
+}
+
+/// Resolve `<wallet_dir>/cache/`, creating it if missing. Used by the
+/// confidential-ledger indexer to persist Merkle commitments fetched from
+/// Torii. Public bytes only — no secret material lands here.
+pub fn cache_dir() -> Result<PathBuf> {
+    let mut p = wallet_dir()?;
+    p.push("cache");
+    if !p.exists() {
+        fs::create_dir_all(&p)
+            .with_context(|| format!("failed to create cache dir at {p:?}"))?;
         let mut perms = fs::metadata(&p)?.permissions();
         perms.set_mode(0o700);
         fs::set_permissions(&p, perms)?;
@@ -276,6 +292,71 @@ pub fn append_note(label: &str, note: &crate::shield::LocalNote) -> Result<()> {
     perms.set_mode(0o600);
     fs::set_permissions(&path, perms)?;
     Ok(())
+}
+
+/// Mark a single local note (identified by `commitment_hex`) as spent:
+/// flip `spendable=false`, persist `nullifier_hex` and `spent_tx_hash_hex`.
+/// Errors if the note isn't found or was already marked spent.
+///
+/// Atomic-by-rewrite, same as `append_note`.
+pub fn mark_note_spent(
+    label: &str,
+    commitment_hex: &str,
+    nullifier_hex: &str,
+    spent_tx_hash_hex: &str,
+) -> Result<()> {
+    let mut record = load(label)?;
+    let note = record
+        .notes
+        .iter_mut()
+        .find(|n| n.commitment_hex.eq_ignore_ascii_case(commitment_hex))
+        .ok_or_else(|| anyhow!(
+            "no LocalNote with commitment '{commitment_hex}' in wallet '{label}'"
+        ))?;
+    if !note.spendable {
+        bail!(
+            "LocalNote '{commitment_hex}' is already marked spent (tx {:?})",
+            note.spent_tx_hash_hex
+        );
+    }
+    note.spendable = false;
+    note.nullifier_hex = Some(nullifier_hex.to_owned());
+    note.spent_tx_hash_hex = Some(spent_tx_hash_hex.to_owned());
+    let path = record_path(label)?;
+    let json = serde_json::to_string_pretty(&record).context("JSON serialize failed")?;
+    fs::write(&path, json).with_context(|| format!("write {path:?}"))?;
+    let mut perms = fs::metadata(&path)?.permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(&path, perms)?;
+    Ok(())
+}
+
+/// Update the cached `leaf_index` of every local note whose
+/// `commitment_hex` matches an entry in the supplied map. Returns the
+/// number of notes whose `leaf_index` actually changed (so a no-op call
+/// reports 0 — useful for detecting redundant runs).
+///
+/// Atomic-by-rewrite, same as `append_note`.
+pub fn update_leaf_indices(label: &str, by_commitment_hex: &std::collections::HashMap<String, u32>) -> Result<usize> {
+    let mut record = load(label)?;
+    let mut updated = 0usize;
+    for note in record.notes.iter_mut() {
+        if let Some(&leaf_index) = by_commitment_hex.get(&note.commitment_hex)
+            && note.leaf_index != Some(leaf_index)
+        {
+            note.leaf_index = Some(leaf_index);
+            updated += 1;
+        }
+    }
+    if updated > 0 {
+        let path = record_path(label)?;
+        let json = serde_json::to_string_pretty(&record).context("JSON serialize failed")?;
+        fs::write(&path, json).with_context(|| format!("write {path:?}"))?;
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(updated)
 }
 
 /// Decode the wrapped seed ciphertext from base64.

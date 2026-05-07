@@ -41,6 +41,48 @@ shielded notes, Reveal recovery secrets, Danger zone.
 - LocalNote persisted to the wallet record on Committed, required
   to spend the note in Phase 2.
 
+### Phase 2 step 1 — Confidential-ledger indexer (2026-05-06)
+- `src/indexer.rs`: paginates `/v1/confidential/notes`, extracts
+  every Shield's `note_commitment`, persists to a binary cache at
+  `~/Library/Application Support/minamoto-wallet/cache/<asset>.bin`.
+  Cross-checks against `/v1/zk/roots` for parity. 5/5 unit tests pass.
+- `src/torii.rs`: added `fetch_confidential_notes_page` (paginated)
+  and `fetch_confidential_root` (POST `/v1/zk/roots`).
+- `src/storage.rs`: added `cache_dir()` helper alongside `wallet_dir()`.
+- CLI: `minamoto-wallet index-confidential <asset_def_id>`.
+- Verified live against Minamoto (asset `6TEAJqbb…`): 1/1 commitment
+  cached, recorded root `dafe0284…` matches `/v1/zk/roots`.
+- Cache file layout: 64-byte header (`MNMTOIDX` magic + version +
+  count + root + fetched_at + reserved) + count × 32 bytes
+  commitments in append (= leaf-index) order.
+
+### Phase 2 step 2 — Local Merkle tree + leaf-index lookup (2026-05-06)
+- `src/merkle.rs`: depth-16 Pasta-Fp Poseidon-pair Merkle tree —
+  bit-for-bit port of `iroha_core::zk::confidential_v2::compute_*`.
+  Public API: `compute_root`, `compute_path` (returns `MerklePath`
+  with siblings + directions + witness_nodes + root),
+  `find_leaf_index`. 5/5 unit tests pass including a multi-leaf
+  round-trip that climbs path siblings and recovers the global root.
+- `src/zk_v2.rs`: added `CONFIDENTIAL_TREE_DEPTH_V2 = 16`,
+  `CONFIDENTIAL_TREE_CAPACITY_V2 = 65 536`,
+  `leaf_scalar_from_commitment` (canonical or legacy-hash fallback),
+  and re-exported `Scalar` for `merkle.rs`.
+- `src/shield.rs::LocalNote`: added `leaf_index: Option<u32>` field
+  with `#[serde(default)]` for backward-compat on existing records.
+- `src/storage.rs`: added `update_leaf_indices` to bulk-set the
+  cached `leaf_index` of a wallet's notes by `commitment_hex` map.
+- CLI: `minamoto-wallet verify-confidential <label> [<asset_def_id>]`.
+  Reads the indexer cache, recomputes the depth-16 root, asserts
+  parity with the chain's `recorded_root`, then locates each
+  `LocalNote` in the global tree and persists its `leaf_index`.
+- **Verified live against Minamoto**: recomputed root from cached
+  commitment of `78f3e474…` matches the chain's `dafe0284…` byte for
+  byte. Wallet `mi-wallet`'s sole note linked at `leaf_index = 0`.
+  This proves our `poseidon_pair` + leaf encoding + padding + tree
+  traversal are identical to the upstream executor.
+- Total unit-test coverage: 21/21 pass (5 indexer + 5 merkle + 5
+  zk_v2 + 4 password + 2 confidential_address).
+
 ### v3 confidential payment address
 - Format: `iroha:confidential:v3:<base64url>` containing
   `{schema, receiveKeyId, receivePublicKeyBase64Url,
@@ -98,13 +140,15 @@ production build avoids them.
 
 ## Next concrete steps (Phase 2 ramp-up)
 
-1. **Confidential ledger indexer**: paginate
-   `/v1/confidential/notes`, persist commitments in
-   `~/Library/Application Support/minamoto-wallet/cache/<asset>.bin`.
-2. **Locate own LocalNotes' leaf indices** in the global tree.
-3. **Port `compute_confidential_merkle_path_v2`** (60 lines, depends
-   only on the already-ported `poseidon_pair`).
-4. **Decide vendor vs path-dep** for the Halo2 prover.
+1. ~~**Confidential ledger indexer**~~: ✅ DONE 2026-05-06 (see
+   `src/indexer.rs`).
+2. ~~**Locate own LocalNotes' leaf indices** in the global tree.~~
+   ✅ DONE 2026-05-06 (see `src/merkle.rs` + `verify-confidential`).
+3. ~~**Port `compute_confidential_merkle_path_v2`**~~ ✅ DONE 2026-05-06.
+4. **Decide vendor vs path-dep** for the Halo2 prover (the `iroha_core`
+   crate that exposes `confidential_v2::build_confidential_unshield_proof_v3`
+   pulls the full chain runtime; `iroha_zkp_halo2` is leaner but stops
+   one level below). Step 3 of the roadmap.
 5. **Build `Unshield` ISI** using real proof attachments.
 6. **Build `ZkTransfer` ISI** (self-split first; cross-recipient
    blocked on the encryption-recipe gap above).
@@ -124,6 +168,8 @@ production build avoids them.
 | `src/balance.rs` | `/v1/explorer/assets` query + display |
 | `src/zk_v2.rs` | port of `iroha_core::zk::confidential_v2` primitives |
 | `src/shield.rs` | Shield ISI builder + commitment derivation |
+| `src/indexer.rs` | confidential-ledger paginated cache (Phase 2 step 1) |
+| `src/merkle.rs` | depth-16 Poseidon-pair Merkle tree (Phase 2 step 2) |
 | `src/confidential_address.rs` | v3 payment address parse / render |
 | `src/delete_challenge.rs` | 3-word BIP39 confirmation for delete |
 | `src/session.rs` | in-memory password cache (5-min TTL) |

@@ -28,7 +28,20 @@
 
 use blake3::Hasher as Blake3Hasher;
 use ff::{Field, PrimeField};
-use pasta_curves::Fp as Scalar;
+pub use pasta_curves::Fp as Scalar;
+
+// ---------------------------------------------------------------------------
+// Confidential Merkle tree parameters (verified against
+// `iroha_core::zk::confidential_v2` lines 48-49)
+// ---------------------------------------------------------------------------
+
+/// Depth of the shielded ledger Merkle tree. The on-chain Halo2-IPA
+/// circuit is hardcoded to this depth; changing it would invalidate
+/// every existing note commitment.
+pub const CONFIDENTIAL_TREE_DEPTH_V2: usize = 16;
+
+/// Maximum number of leaves the depth-16 tree can hold.
+pub const CONFIDENTIAL_TREE_CAPACITY_V2: usize = 1 << CONFIDENTIAL_TREE_DEPTH_V2;
 
 // ---------------------------------------------------------------------------
 // Low-level scalar helpers
@@ -281,6 +294,19 @@ pub fn derive_confidential_nullifier_v2(
 
 fn nullifier_scalar(sk: Scalar, rho: Scalar, asset_tag: Scalar, chain_tag: Scalar) -> Scalar {
     poseidon_pair(sk, poseidon_pair(rho, poseidon_pair(asset_tag, chain_tag)))
+}
+
+/// Interpret a 32-byte commitment as a Pasta scalar leaf.
+///
+/// Most note commitments are produced by `scalar_to_repr_bytes` upstream
+/// (so they are canonical and `scalar_from_repr` succeeds). For the rare
+/// non-canonical case the upstream code falls back to a domain-separated
+/// hash so the tree is still well-defined. We mirror that exactly.
+///
+/// Upstream: `leaf_scalar_from_commitment` in `confidential_v2.rs`.
+pub fn leaf_scalar_from_commitment(commitment: [u8; 32]) -> Scalar {
+    scalar_from_repr(commitment)
+        .unwrap_or_else(|| hash_to_scalar(b"iroha.confidential.v2.legacy_leaf", &[&commitment]))
 }
 
 // ---------------------------------------------------------------------------

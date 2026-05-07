@@ -79,6 +79,24 @@ pub struct LocalNote {
     pub created_at: String,
     /// `true` until we've submitted an Unshield/ZkTransfer that spends it.
     pub spendable: bool,
+    /// Position of this note's commitment in the global confidential
+    /// Merkle tree, once we've located it via `merkle::find_leaf_index`
+    /// against a fresh `indexer::refresh` snapshot. `None` means "not yet
+    /// linked"; Phase-2 spending requires this to be `Some`. We persist
+    /// it locally so we don't have to re-scan the entire tree on every
+    /// spend.
+    #[serde(default)]
+    pub leaf_index: Option<u32>,
+    /// Hex-encoded nullifier emitted when this note was spent via
+    /// Unshield/ZkTransfer. `None` while `spendable == true`. Persisting
+    /// it lets us cross-reference the on-chain `ConfidentialEvent::Unshielded`
+    /// stream and detect double-spend bugs on our side.
+    #[serde(default)]
+    pub nullifier_hex: Option<String>,
+    /// Tx hash of the Unshield/ZkTransfer that consumed this note. `None`
+    /// until spent.
+    #[serde(default)]
+    pub spent_tx_hash_hex: Option<String>,
 }
 
 /// Output for the dry-run path: derive but do not sign nor submit.
@@ -357,6 +375,9 @@ pub fn shield(
             created_tx_hash_hex: tx_hash_hex.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
             spendable: true,
+            leaf_index: None,
+            nullifier_hex: None,
+            spent_tx_hash_hex: None,
         };
         storage::append_note(label, &note)
             .with_context(|| format!("failed to persist local note for '{label}'"))?;

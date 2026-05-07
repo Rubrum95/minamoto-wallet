@@ -115,6 +115,20 @@ blake3 = "1"
 path = "../iroha-source/iroha/crates/iroha_version"
 features = ["derive"]
 
+# ---------------------------------------------------------------------------
+# Phase-2 prover (experimental — see ZK_ROADMAP.md).
+# `iroha_core` ships the canonical `build_confidential_unshield_proof_v3`
+# we need to call so our proofs are byte-identical to what the chain
+# verifies. We disable default features and only enable the ZK path.
+# Hard deps (iroha_p2p, iroha_logger, iroha_genesis, iroha_futures,
+# iroha_telemetry) are pulled regardless and inflate compile time
+# significantly; if that becomes unworkable, the fallback is to vendor
+# `iroha_zkp_halo2` plus the relevant `confidential_v2` functions
+# directly into a `src/prover.rs` module here.
+# ---------------------------------------------------------------------------
+[dependencies.iroha_core]
+path = "../iroha-source/iroha/crates/iroha_core"
+
 # macOS Secure Enclave / Keychain Services FFI.
 # `security-framework` (safe) covers SE key generation + ECIES encrypt/decrypt.
 # `security-framework-sys` (raw) is kept for low-level constants we still need
@@ -139,3 +153,16 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 panic = "abort"
+
+# ---------------------------------------------------------------------------
+# Patches mirroring iroha-source/iroha/Cargo.toml.
+# `iroha_core` (path-dep above) depends on `halo2-axiom` / `halo2curves-axiom`
+# at versions that exist on crates.io but with different trait impls than
+# the vendored forks. Without these redirects, our build would resolve the
+# crates.io versions and trip on missing trait bounds (e.g. `Fp: Hash`).
+# Both vendored crates live in the iroha source tree.
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+halo2-axiom = { path = "../iroha-source/iroha/vendor/halo2-axiom" }
+halo2curves-axiom = { path = "../iroha-source/iroha/vendor/halo2curves-axiom" }
+find_cuda_helper = { path = "../iroha-source/iroha/vendor/find_cuda_helper" }
