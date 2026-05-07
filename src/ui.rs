@@ -287,6 +287,38 @@ struct NoteSummary {
     created_tx_hash: String,
     created_at: String,
     spendable: bool,
+    /// Position of the commitment in the global confidential Merkle
+    /// tree. `None` until `verify-confidential` has been run; the
+    /// frontend uses this to decide whether the Unshield button should
+    /// auto-run a refresh first.
+    leaf_index: Option<u32>,
+    /// Hex-encoded nullifier emitted when the note was spent. `None`
+    /// while `spendable == true`.
+    nullifier: Option<String>,
+    /// Tx hash of the Unshield/ZkTransfer that consumed this note.
+    spent_tx_hash: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UnshieldRequest {
+    /// Optional commitment_hex to disambiguate when the wallet has
+    /// multiple spendable notes. If absent and the wallet has more
+    /// than one, the request is rejected.
+    #[serde(default)]
+    commitment: Option<String>,
+    #[serde(default)]
+    password: String,
+}
+
+#[derive(Serialize)]
+struct UnshieldResponse {
+    tx_hash: String,
+    nullifier: String,
+    /// Spent commitment, for the UI to mark the right row.
+    commitment: String,
+    amount: String,
+    /// Merkle root the proof bound to (purely informational).
+    root: String,
 }
 
 /// Boot the local API server on a background thread and run the
@@ -600,6 +632,9 @@ fn handle(mut req: Request) -> Result<()> {
                         created_tx_hash: n.created_tx_hash_hex.clone(),
                         created_at: n.created_at.clone(),
                         spendable: n.spendable,
+                        leaf_index: n.leaf_index,
+                        nullifier: n.nullifier_hex.clone(),
+                        spent_tx_hash: n.spent_tx_hash_hex.clone(),
                     }).collect();
                     respond(req, 200, json_string(&serde_json::json!({"notes": notes})))
                 }
@@ -685,6 +720,155 @@ fn handle(mut req: Request) -> Result<()> {
                     error: &format!("{e:#}"),
                 })),
             }
+        }
+
+        (Method::Post, p) if p.starts_with("/api/wallet/") && p.ends_with("/unshield") => {
+            let label = extract_label(p, "/unshield")?;
+            let body = read_body(&mut req)?;
+            let payload: UnshieldRequest = serde_json::from_str(&body)
+                .context("invalid JSON body")?;
+            let pw = match take_password(&label, Some(&payload.password), false) {
+                Ok(p) => p,
+                Err(e) if e == "__NEED_PASSWORD__" => {
+                    return respond(req, 401, json_string(&NeedPassword { need_password: true, label: &label }));
+                }
+                Err(e) => {
+                    return respond(req, 401, json_string(&ApiError { error: &e }));
+                }
+            };
+            // Refresh the indexer cache + leaf indices implicitly so a
+            // user clicking Unshield doesn't have to know about the
+            // index/verify two-step plumbing. Both are cheap public
+            // reads; if either fails we surface the error and bail.
+            let asset_def_id = crate::consts::XOR_ASSET_DEFINITION_ID;
+            if let Err(e) = crate::indexer::refresh(asset_def_id) {
+                return respond(req, 502, json_string(&ApiError {
+                    error: &format!("refresh confidential index: {e:#}"),
+                }));
+            }
+            if let Ok(Some(snap)) = crate::indexer::read_cache(asset_def_id) {
+                use std::collections::HashMap;
+                let mut by_hex: HashMap<String, u32> = HashMap::with_capacity(snap.commitments.len());
+                for (i, c) in snap.commitments.iter().enumerate() {
+                    by_hex.insert(hex::encode(c), i as u32);
+                }
+                let _ = storage::update_leaf_indices(&label, &by_hex);
+            }
+            let note = match crate::prover::pick_spendable_note(
+                &label,
+                asset_def_id,
+                payload.commitment.as_deref(),
+            ) {
+                Ok(n) => n,
+                Err(e) => return respond(req, 400, json_string(&ApiError {
+                    error: &format!("{e:#}"),
+                })),
+            };
+            let amount: u128 = match note.amount_u128.parse() {
+                Ok(a) => a,
+                Err(_) => return respond(req, 500, json_string(&ApiError {
+                    error: &format!("local note has invalid amount '{}'", note.amount_u128),
+                })),
+            };
+            let seed = match crate::wallet::unlock_seed(
+                &label,
+                "Unshield XOR back to public balance",
+                pw.as_deref().map(|s| s.as_str()),
+            ) {
+                Ok(s) => s,
+                Err(e) => return respond(req, 401, json_string(&ApiError {
+                    error: &format!("{e:#}"),
+                })),
+            };
+            let req_obj = crate::prover::UnshieldRequest {
+                label: label.clone(),
+                asset_def_id: asset_def_id.to_owned(),
+                chain_id: crate::consts::CHAIN_ID.to_owned(),
+                spend_key: seed.to_vec(),
+                note: note.clone(),
+                public_amount: amount,
+            };
+            let bundle = match crate::prover::build_unshield_proof(&req_obj) {
+                Ok(b) => b,
+                Err(e) => return respond(req, 500, json_string(&ApiError {
+                    error: &format!("proof generation failed: {e:#}"),
+                })),
+            };
+            // Build + submit the Unshield ISI.
+            use iroha_crypto::{Algorithm, KeyPair, PrivateKey, PublicKey};
+            use iroha_data_model::asset::AssetDefinitionId;
+            use iroha_data_model::isi::zk::Unshield;
+            use iroha_data_model::isi::InstructionBox;
+            use iroha_data_model::proof::ProofAttachment;
+            use iroha_version::codec::EncodeVersioned;
+
+            let asset_def: AssetDefinitionId = match AssetDefinitionId::parse_address_literal(asset_def_id) {
+                Ok(a) => a,
+                Err(e) => return respond(req, 500, json_string(&ApiError {
+                    error: &format!("parse asset definition id: {e:?}"),
+                })),
+            };
+            let pubkey = match crate::wallet::derive_public_key(&seed) {
+                Ok(pk) => pk,
+                Err(e) => return respond(req, 500, json_string(&ApiError {
+                    error: &format!("{e:#}"),
+                })),
+            };
+            let to_account = iroha_data_model::account::AccountId::new(pubkey);
+            let attachment = ProofAttachment::new_ref(
+                bundle.proof_box.backend.clone(),
+                bundle.proof_box.clone(),
+                bundle.vk_id.clone(),
+            );
+            let unshield_isi = Unshield::new(
+                asset_def,
+                to_account.clone(),
+                amount,
+                bundle.nullifiers.clone(),
+                attachment,
+                Some(bundle.root),
+            );
+            let instructions: Vec<InstructionBox> = vec![unshield_isi.into()];
+            let chain_id = iroha_data_model::ChainId::from(crate::consts::CHAIN_ID.to_owned());
+            let builder = iroha_data_model::transaction::TransactionBuilder::new(chain_id, to_account)
+                .with_instructions(instructions);
+            let kp = KeyPair::from_seed(req_obj.spend_key.clone(), Algorithm::Ed25519);
+            let (_pk, sk): (PublicKey, PrivateKey) = kp.into_parts();
+            let signed = builder.sign(&sk);
+            let body_bytes: Vec<u8> = signed.encode_versioned();
+            let tx_hash = signed.hash();
+            let tx_hash_hex = hex::encode(tx_hash.as_ref());
+            if let Err(e) = torii::submit_transaction(body_bytes) {
+                return respond(req, 502, json_string(&ApiError {
+                    error: &format!("submit failed: {e:#}"),
+                }));
+            }
+            let (final_status, reason_opt) = match torii::wait_for_commit(&tx_hash_hex, 120) {
+                Ok(s) => s,
+                Err(e) => return respond(req, 504, json_string(&ApiError {
+                    error: &format!("commit-wait failed: {e:#}; tx hash: {tx_hash_hex}"),
+                })),
+            };
+            if final_status != "Committed" {
+                return respond(req, 502, json_string(&ApiError {
+                    error: &format!(
+                        "tx {tx_hash_hex} ended {final_status} (reason: {reason_opt:?}); local note NOT marked spent"
+                    ),
+                }));
+            }
+            let nullifier_hex = hex::encode(bundle.nullifiers[0]);
+            if let Err(e) = storage::mark_note_spent(&label, &note.commitment_hex, &nullifier_hex, &tx_hash_hex) {
+                return respond(req, 500, json_string(&ApiError {
+                    error: &format!("persist spent flag: {e:#}"),
+                }));
+            }
+            respond(req, 200, json_string(&UnshieldResponse {
+                tx_hash: tx_hash_hex,
+                nullifier: nullifier_hex,
+                commitment: note.commitment_hex,
+                amount: amount.to_string(),
+                root: hex::encode(bundle.root),
+            }))
         }
 
         (Method::Post, p)

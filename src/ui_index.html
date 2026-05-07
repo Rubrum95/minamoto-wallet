@@ -388,8 +388,10 @@
 
     <div class="card">
       <h2>Local shielded notes</h2>
-      <p class="tiny muted">Each Shield you create persists here. They are required to spend the note later (Phase 2). Status <code>spendable</code> = the note has not been used as input of a future Unshield/ZkTransfer.</p>
+      <p class="tiny muted">Each Shield you create persists here. Status <code>spendable</code> = the note has not been used as input of an Unshield/ZkTransfer. Press <strong>Unshield</strong> to convert a confidential note back to public XOR (generates a Halo2-IPA proof locally; takes ~30-60 s on Apple Silicon).</p>
+      <p class="tiny" style="color: var(--warn);">⚠ Minamoto's gas schedule is currently calibrated for Groth16 proofs (~256 B); Halo2-IPA produces ~28 KB proofs, which makes any ZK op cost ~20 XOR in fees today. Your wallet must hold that much public XOR for the tx to be admitted. The code is correct — the chain economics are pending recalibration.</p>
       <div id="notesList" class="muted">Loading…</div>
+      <div id="unshieldResult" class="hidden" style="margin-top: 14px;"></div>
     </div>
 
     <div class="card">
@@ -888,18 +890,32 @@ async function refreshNotes() {
       const status = n.spendable
         ? el('span', { class: 'pill ok' }, 'spendable')
         : el('span', { class: 'pill warn' }, 'spent');
+      let action;
+      if (n.spendable) {
+        const btn = el('button', { class: 'ghost' }, 'Unshield');
+        btn.style.padding = '4px 10px';
+        btn.style.fontSize = '13px';
+        btn.addEventListener('click', () => unshieldNote(n.commitment, n.amount));
+        action = btn;
+      } else {
+        const spentTx = (n.spent_tx_hash || '').slice(0, 14);
+        action = el('span', { class: 'tiny muted', title: n.spent_tx_hash || '' },
+          spentTx ? `tx ${spentTx}…` : '—');
+      }
       tbody.appendChild(el('tr', null,
         el('td', { class: 'mono' }, n.amount + ' XOR'),
         el('td', { class: 'mono', title: n.commitment }, cm),
         el('td', { class: 'mono', title: n.created_tx_hash }, tx),
-        el('td', null, status)));
+        el('td', null, status),
+        el('td', null, action)));
     }
     const table = el('table', null,
       el('thead', null, el('tr', null,
         el('th', null, 'Amount'),
         el('th', null, 'Commitment'),
         el('th', null, 'Created tx'),
-        el('th', null, 'Status'))),
+        el('th', null, 'Status'),
+        el('th', null, 'Action'))),
       tbody);
     wrap.appendChild(table);
   } catch (e) {
@@ -1415,6 +1431,65 @@ async function payAddress() {
     result.appendChild(el('span', { class: 'pill err' }, e.message));
   } finally {
     $('#payBtn').disabled = false;
+  }
+}
+
+/// Unshield one shielded note → public XOR. Triggers Touch ID via the
+/// password modal, generates a Halo2-IPA proof locally (~30-60s on
+/// Apple Silicon), submits the Unshield ISI, waits for commit, and
+/// flips the local note's `spendable=false` on success.
+async function unshieldNote(commitment, amount) {
+  if (!state.current) return;
+  if (!(await confirmDialog({
+    title: `Unshield ${amount} XOR?`,
+    message:
+      `Convert this confidential note back to public XOR.\n\n` +
+      `Commitment: ${commitment.slice(0, 24)}…\n\n` +
+      `⚠ Minamoto's gas schedule prices ZK ops at ~20 XOR fee today\n` +
+      `(per_proof_byte calibrated for Groth16 / 256B; Halo2-IPA produces 28KB).\n` +
+      `Your wallet must hold ≥ ~21 XOR public for the tx to be admitted.\n\n` +
+      `Proof generation runs locally and takes ~30-60 s — do not close the\n` +
+      `wallet during that time.`,
+    confirmText: 'Generate proof & sign',
+  }))) return;
+
+  const result = $('#unshieldResult');
+  result.classList.remove('hidden');
+  setSpinnerText(result, 'Generating Halo2-IPA proof — this is the slow step (~30-60s on M1)…');
+
+  try {
+    const r = await apiSigning(`/api/wallet/${encodeURIComponent(state.current)}/unshield`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commitment }),
+    });
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill ok' }, 'UNSHIELDED'));
+    result.appendChild(el('div', { class: 'mono tiny', style: 'margin-top: 8px;' },
+      `tx hash:    ${r.tx_hash}`));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      `amount:     ${r.amount} XOR (credited to public balance)`));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      `nullifier:  ${r.nullifier}`));
+    result.appendChild(el('div', { class: 'mono tiny' },
+      `commit:     ${r.commitment} (now spent)`));
+    const link = el('a', {
+      href: 'https://sorametrics.org/minamoto#tx/' + r.tx_hash,
+      target: '_blank', rel: 'noopener',
+    }, 'View on SoraMetrics');
+    result.appendChild(el('div', { class: 'tiny', style: 'margin-top: 6px;' }, link));
+    // Refresh both panels: balance went up, the note row now shows "spent".
+    setTimeout(() => { refreshBalance(); refreshNotes(); }, 1500);
+  } catch (e) {
+    clearChildren(result);
+    result.appendChild(el('span', { class: 'pill err' }, e.message));
+    // Most common failure on mainnet is the fee admission rejection.
+    // Surface the explanation inline so the user doesn't have to dig.
+    if (/queue_nexus_fee_rejected|cannot cover the Nexus fee/i.test(e.message)) {
+      result.appendChild(el('p', { class: 'tiny muted', style: 'margin-top: 10px;' },
+        'The chain rejected the tx because the Nexus fee admission bound exceeds your public XOR balance. ' +
+        'This is the calibration issue described above — not a bug in your wallet.'));
+    }
   }
 }
 
